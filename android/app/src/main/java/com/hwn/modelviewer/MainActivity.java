@@ -37,17 +37,22 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.FilterInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Offline Android experiment. Large native stream readers have not yet been ported. */
 public final class MainActivity extends Activity {
@@ -61,9 +66,15 @@ public final class MainActivity extends Activity {
     private WebView web;
     private TextView title, status;
     private Button open;
+    private Button cancel;
     private FrameLayout busyOverlay;
     private boolean ready, loading;
     private JSONArray waiting;
+    private boolean waitingStream;
+    private boolean streaming;
+    private volatile boolean severeMemoryPressure;
+    private AtomicBoolean cancellation;
+    private File activeDirectory;
     private File imports;
     private File currentImport;
 
@@ -71,6 +82,7 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         imports = new File(getCacheDir(), "viewer-imports");
         imports.mkdirs();
+        if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) new File(getCacheDir(), "viewer-debug-status.json").delete();
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.rgb(247, 248, 250));
@@ -97,6 +109,11 @@ public final class MainActivity extends Activity {
         open.setText("打开文件");
         open.setOnClickListener(v -> pickFiles());
         header.addView(open);
+        cancel = new Button(this);
+        cancel.setText("取消");
+        cancel.setVisibility(View.GONE);
+        cancel.setOnClickListener(v -> cancelLoading());
+        header.addView(cancel);
         root.addView(header);
         status = new TextView(this);
         status.setText("本机离线测试版 · 请选择模型文件");
@@ -136,6 +153,8 @@ public final class MainActivity extends Activity {
                 setLoading(true, "正在打开内置测试模型…");
             } else if ("picker".equals(sample)) {
                 pickFiles();
+            } else if ("fixture".equals(sample)) {
+                importFiles(Arrays.asList(Uri.parse("content://com.hwn.modelviewer.test/fixture")));
             } else if ("import".equals(sample)) {
                 try (InputStream input = getAssets().open("assets/models/utah_teapot.stl");
                      FileOutputStream output = new FileOutputStream(new File(getCacheDir(), "android-test-teapot.stl"))) {
@@ -226,12 +245,18 @@ public final class MainActivity extends Activity {
         }
         setLoading(true, "正在复制文件到设备缓存…");
         File directory = new File(imports, UUID.randomUUID().toString());
+        activeDirectory = directory;
         ActivityManager manager = (ActivityManager)getSystemService(ACTIVITY_SERVICE);
         final long maxBytes = Math.min(128L * 1024 * 1024, (long)manager.getMemoryClass() * 1024 * 1024 / 5);
+        final boolean stl = ext(names.get(0)).equals("stl");
+        final AtomicBoolean cancelled = new AtomicBoolean(false);
+        cancellation = cancelled;
+        streaming = stl;
         importer.execute(() -> {
             try {
                 if (!directory.mkdirs()) throw new Exception("无法创建缓存目录");
                 long copied = 0;
+                long lastReport = 0;
                 JSONArray urls = new JSONArray();
                 for (int i = 0; i < orderedFiles.size(); i++) {
                     Uri uri = orderedFiles.get(i);
@@ -242,27 +267,70 @@ public final class MainActivity extends Activity {
                         byte[] buffer = new byte[256 * 1024];
                         int n;
                         while ((n = input.read(buffer)) != -1) {
+                            checkResources(cancelled, directory, n);
                             copied += n;
-                            if (copied > maxBytes) throw new Exception("安卓原型暂不支持此大小的文件；原生分块读取尚未移植。请先用较小的模型测试。");
+                            if (!stl && copied > maxBytes) throw new Exception("此格式的原生分块读取尚未移植，请先用较小的模型测试。");
                             output.write(buffer, 0, n);
+                            if (System.nanoTime() - lastReport > 250_000_000L) {
+                                lastReport = System.nanoTime();
+                                final long bytes = copied;
+                                runOnUiThread(() -> { if (!cancelled.get()) status.setText("正在导入模型 · 已复制 " + formatBytes(bytes)); });
+                            }
                         }
                     }
                     urls.put(BASE + "imports/" + directory.getName() + "/" + Uri.encode(name));
                 }
+                checkResources(cancelled, directory, 0);
+                if (stl) {
+                    File modelFile = new File(directory, names.get(0));
+                    File streamDirectory = new File(directory, "stream");
+                    StlStreamReader reader = new StlStreamReader(modelFile, streamDirectory, new StlStreamReader.Listener() {
+                        private long lastReport;
+                        @Override public void check() throws IOException { checkResources(cancelled, directory, 0); }
+                        @Override public void progress(long bytes, long total, long triangles) {
+                            if (System.nanoTime() - lastReport < 200_000_000L) return;
+                            lastReport = System.nanoTime();
+                            runOnUiThread(() -> {
+                                if (!cancelled.get()) status.setText("正在分块读取 · " + formatBytes(bytes) + " / " + formatBytes(total));
+                            });
+                        }
+                        @Override public void manifestReady(File manifest) {
+                            runOnUiThread(() -> {
+                                if (cancelled.get() || isFinishing() || isDestroyed()) return;
+                                currentImport = directory;
+                                title.setText(names.get(0));
+                                waiting = new JSONArray().put(BASE + "imports/" + directory.getName() + "/stream/manifest.json");
+                                waitingStream = true;
+                                startPending();
+                            });
+                        }
+                    });
+                    reader.convert();
+                    return;
+                }
                 runOnUiThread(() -> {
-                    if (isFinishing() || isDestroyed()) return;
+                    if (cancelled.get() || isFinishing() || isDestroyed()) return;
                     waiting = urls;
+                    waitingStream = false;
                     currentImport = directory;
                     title.setText(names.get(0));
                     status.setText("正在解析模型，请稍候…");
                     startPending();
                 });
-            } catch (Exception e) {
+            } catch (Exception | OutOfMemoryError e) {
                 deleteTree(directory);
                 runOnUiThread(() -> {
-                    if (isFinishing() || isDestroyed()) return;
+                    if (cancelled.get() || isFinishing() || isDestroyed()) return;
+                    try { debugStatus(new JSONObject().put("type", "native_read_error").put("message", e.getMessage())); }
+                    catch (org.json.JSONException ignored) { }
                     setLoading(false, "导入失败，可重新选择文件");
-                    showError(e.getMessage() == null ? "无法读取所选文件" : e.getMessage());
+                    streaming = false;
+                    waiting = null;
+                    ready = false;
+                    web.evaluateJavascript("window.O3DVStop?.();", null);
+                    web.reload();
+                    title.setText("3D 模型查看器 · 安卓测试");
+                    showError(e instanceof OutOfMemoryError ? "设备可用内存不足，已停止读取。" : (e.getMessage() == null ? "无法读取所选文件" : e.getMessage()));
                 });
             }
         });
@@ -272,18 +340,66 @@ public final class MainActivity extends Activity {
         if (!ready || waiting == null) return;
         JSONArray urls = waiting;
         waiting = null;
-        web.evaluateJavascript("window.O3DVOpenFiles(" + urls.toString() + ");", null);
+        if (waitingStream) {
+            String url = JSONObject.quote(urls.optString(0));
+            int budget = 50331648;
+            if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0)
+                budget = Math.max(262144, Math.min(budget, getIntent().getIntExtra("debug-budget", budget)));
+            web.evaluateJavascript("window.O3DVSetMemoryPolicy({geometryBytes:" + budget + ",textureBytes:12582912,framePixels:2000000});window.O3DVOpenStream(" + url + ");", null);
+        } else web.evaluateJavascript("window.O3DVOpenFiles(" + urls.toString() + ");", null);
     }
 
     private void setLoading(boolean value, String message) {
         loading = value;
         open.setEnabled(!value);
+        cancel.setVisibility(value ? View.VISIBLE : View.GONE);
         busyOverlay.setVisibility(value ? View.VISIBLE : View.GONE);
         status.setText(message);
     }
 
+    private static String formatBytes(long bytes) {
+        return String.format(Locale.ROOT, "%.1f MiB", bytes / 1048576.0);
+    }
+
+    private void checkResources(AtomicBoolean cancelled, File directory, long required) throws IOException {
+        if (cancelled.get() || Thread.currentThread().isInterrupted()) throw new IOException("读取已取消。");
+        if (severeMemoryPressure) throw new IOException("设备可用内存不足，已停止读取。");
+        ActivityManager.MemoryInfo info = new ActivityManager.MemoryInfo();
+        ((ActivityManager)getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(info);
+        Runtime runtime = Runtime.getRuntime();
+        long javaAvailable = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
+        if (info.lowMemory || javaAvailable < 8L * 1024 * 1024) throw new IOException("设备可用内存不足，已停止读取。");
+        long free = directory.getUsableSpace();
+        if (free < StlStreamReader.STORAGE_RESERVE || required > free - StlStreamReader.STORAGE_RESERVE)
+            throw new IOException("设备存储空间不足，请清理空间后重试。");
+    }
+
+    private void cancelLoading() {
+        if (!loading) return;
+        if (cancellation != null) cancellation.set(true);
+        final File doomed = activeDirectory;
+        if (doomed != null) importer.execute(() -> deleteTree(doomed));
+        activeDirectory = null;
+        waiting = null;
+        streaming = false;
+        ready = false;
+        web.evaluateJavascript("window.O3DVStop?.();", null);
+        web.reload();
+        title.setText("3D 模型查看器 · 安卓测试");
+        setLoading(false, "已取消，可重新选择模型");
+        try { debugStatus(new JSONObject().put("type", "load_cancelled")); }
+        catch (org.json.JSONException ignored) { }
+    }
+
     private void showError(String message) {
         new AlertDialog.Builder(this).setTitle("无法打开模型").setMessage(message).setPositiveButton("确定", null).show();
+    }
+
+    private void debugStatus(JSONObject state) {
+        if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) == 0) return;
+        try (FileOutputStream output = new FileOutputStream(new File(getCacheDir(), "viewer-debug-status.json"))) {
+            output.write(state.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (IOException ignored) { }
     }
 
     private final class Bridge {
@@ -292,11 +408,15 @@ public final class MainActivity extends Activity {
                 try {
                     JSONObject message = new JSONObject(json);
                     String type = message.optString("type");
+                    if (type.equals("model_loaded") || type.equals("javascript_error") || type.equals("stream_progress")) debugStatus(message);
                     if (type.equals("ready")) { ready = true; startPending(); }
                     else if (type.equals("request_file_picker")) pickFiles();
                     else if (type.equals("model_loaded")) {
                         JSONArray missing = message.optJSONArray("missingFiles");
                         setLoading(false, missing != null && missing.length() > 0 ? "模型已显示，部分配套文件缺失" : "模型已显示");
+                        streaming = false;
+                        cancellation = null;
+                        activeDirectory = null;
                         final File keep = currentImport;
                         importer.execute(() -> {
                             File[] old = imports.listFiles();
@@ -304,9 +424,23 @@ public final class MainActivity extends Activity {
                         });
                     } else if (type.equals("load_progress")) {
                         setLoading(true, "正在解析模型，请稍候…");
+                    } else if (type.equals("stream_progress")) {
+                        if (streaming && !message.optBoolean("complete")) {
+                            status.setText("正在生成画面 · 已显示 " + message.optInt("displayed") + " 个数据块");
+                        }
                     } else if (type.equals("no_importable_file") || type.equals("failed_to_load_file") || type.equals("import_failed") || type.equals("javascript_error")) {
+                        if (cancellation != null) cancellation.set(true);
+                        File failed = activeDirectory;
+                        if (failed != null) importer.execute(() -> deleteTree(failed));
+                        activeDirectory = null;
+                        streaming = false;
                         setLoading(false, "打开失败，可重新选择文件");
-                        showError("无法解析或显示此模型。请检查格式和配套文件；安卓原生读取器尚未移植。");
+                        waiting = null;
+                        ready = false;
+                        web.evaluateJavascript("window.O3DVStop?.();", null);
+                        web.reload();
+                        title.setText("3D 模型查看器 · 安卓测试");
+                        showError("无法解析或显示此模型。请检查格式和配套文件，或释放设备资源后重试。");
                     }
                 } catch (Exception ignored) { }
             });
@@ -327,8 +461,11 @@ public final class MainActivity extends Activity {
             try {
                 if (path.startsWith("/imports/")) {
                     File file = new File(imports, path.substring("/imports/".length()));
-                    if (!file.getCanonicalPath().startsWith(imports.getCanonicalPath() + File.separator) || !file.isFile()) return denied();
-                    return response(path, new FileInputStream(file));
+                    if (!file.getCanonicalPath().startsWith(imports.getCanonicalPath() + File.separator) || !file.isFile()) {
+                        if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) android.util.Log.w("O3DVHttp", "Missing local resource: " + path);
+                        return denied();
+                    }
+                    return fileResponse(path, file, request);
                 }
                 String asset = path.equals("/") ? "index.html" : path.substring(1);
                 InputStream input = getAssets().open(asset);
@@ -344,7 +481,10 @@ public final class MainActivity extends Activity {
                     input = new ByteArrayInputStream(html.getBytes(StandardCharsets.UTF_8));
                 }
                 return response(path, input);
-            } catch (Exception e) { return denied(); }
+            } catch (Exception e) {
+                if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) android.util.Log.w("O3DVHttp", "Local read failed: " + path, e);
+                return denied();
+            }
         }
 
         @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
@@ -359,12 +499,70 @@ public final class MainActivity extends Activity {
     }
 
     private WebResourceResponse response(String path, InputStream stream) {
+        return new WebResourceResponse(mime(path), null, stream);
+    }
+
+    private String mime(String path) {
         String extension = ext(path);
         String mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
         if (extension.equals("wasm")) mime = "application/wasm";
         if (extension.equals("js")) mime = "application/javascript";
         if (mime == null) mime = "application/octet-stream";
-        return new WebResourceResponse(mime, null, stream);
+        return mime;
+    }
+
+    private WebResourceResponse fileResponse(String path, File file, WebResourceRequest request) throws IOException {
+        long size = file.length(), first = 0, last = size - 1;
+        String range = null;
+        for (Map.Entry<String, String> header : request.getRequestHeaders().entrySet())
+            if (header.getKey().equalsIgnoreCase("Range")) range = header.getValue();
+        if (range != null) {
+            java.util.regex.Matcher match = java.util.regex.Pattern.compile("bytes=(\\d+)-(\\d*)").matcher(range.trim());
+            if (!match.matches()) return invalidRange(size);
+            try {
+                first = Long.parseLong(match.group(1));
+                if (!match.group(2).isEmpty()) last = Long.parseLong(match.group(2));
+            } catch (NumberFormatException e) { return invalidRange(size); }
+            if (first >= size || last < first) return invalidRange(size);
+            last = Math.min(last, size - 1);
+        }
+        // WebView applies the request's start offset to the supplied stream itself.
+        // Bound the stream at the requested end so it cannot return the rest of the file.
+        long accessibleBytes = range == null ? size : last + 1;
+        FileInputStream input = new FileInputStream(file);
+        InputStream bounded = new FilterInputStream(input) {
+            private long remaining = accessibleBytes;
+            @Override public int available() throws IOException { return (int)Math.min(super.available(), remaining); }
+            @Override public long skip(long count) throws IOException {
+                long skipped = super.skip(Math.min(count, remaining));
+                remaining -= skipped;
+                return skipped;
+            }
+            @Override public int read() throws IOException {
+                if (remaining == 0) return -1;
+                int value = super.read();
+                if (value >= 0) remaining--;
+                return value;
+            }
+            @Override public int read(byte[] data, int offset, int length) throws IOException {
+                if (remaining == 0) return -1;
+                int count = super.read(data, offset, (int)Math.min(length, remaining));
+                if (count > 0) remaining -= count;
+                return count;
+            }
+        };
+        Map<String, String> headers = new HashMap<>();
+        headers.put("Accept-Ranges", "bytes");
+        headers.put("Cache-Control", "no-store");
+        if (range != null) headers.put("Content-Range", "bytes " + first + "-" + last + "/" + size);
+        return new WebResourceResponse(mime(path), null, range == null ? 200 : 206,
+            range == null ? "OK" : "Partial Content", headers, bounded);
+    }
+
+    private WebResourceResponse invalidRange(long size) {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("Content-Range", "bytes */" + size);
+        return new WebResourceResponse("text/plain", "utf-8", 416, "Range Not Satisfiable", headers, new ByteArrayInputStream(new byte[0]));
     }
 
     private WebResourceResponse denied() {
@@ -378,8 +576,28 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        if (cancellation != null) cancellation.set(true);
         importer.shutdown();
         if (web != null) { web.removeJavascriptInterface("AndroidBridge"); web.destroy(); }
         super.onDestroy();
+    }
+
+    @Override public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level == TRIM_MEMORY_RUNNING_CRITICAL || level >= TRIM_MEMORY_COMPLETE) severeMemoryPressure = true;
+        if (web != null && level >= TRIM_MEMORY_RUNNING_LOW) {
+            web.evaluateJavascript("window.O3DVSetMemoryPolicy?.({geometryBytes:12582912,textureBytes:4194304,framePixels:1000000});", null);
+        }
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        severeMemoryPressure = false;
+        if (web != null) web.evaluateJavascript("window.O3DVSetForeground?.(true);", null);
+    }
+
+    @Override protected void onPause() {
+        if (web != null) web.evaluateJavascript("window.O3DVSetForeground?.(false);", null);
+        super.onPause();
     }
 }
