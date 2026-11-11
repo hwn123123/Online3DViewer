@@ -4,3 +4,6 @@ node_modules
 __pycache__
 ios/**/*.xcuserstate
 ios/**/xcuserdata/
+android/.gradle/
+android/**/build/
+android/local.properties

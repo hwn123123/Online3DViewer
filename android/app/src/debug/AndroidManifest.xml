@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider android:name=".TestFileProvider" android:authorities="com.hwn.modelviewer.test" android:exported="false" />
+    </application>
+</manifest>

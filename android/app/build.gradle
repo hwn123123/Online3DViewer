@@ -1,0 +1,24 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.hwn.modelviewer'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.hwn.modelviewer'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+    }
+    sourceSets.main.assets.srcDirs = ["${rootProject.projectDir}/../build/ios/WebAssets"]
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+preBuild.doFirst {
+    if (!file("${rootProject.projectDir}/../build/ios/WebAssets/index.html").exists()) {
+        throw new GradleException('Missing local viewer assets; prepare build/ios/WebAssets first (see android/README.md).')
+    }
+}
