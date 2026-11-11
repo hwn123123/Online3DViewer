@@ -9,6 +9,7 @@ import { Triangle } from '../model/triangle.js';
 import { ImporterBase } from './importerbase.js';
 import { ColorToMaterialConverter, LoadExternalLibrary } from './importerutils.js';
 import { Loc, FLoc } from '../core/localization.js';
+import { GetExternalLibraryUrl } from '../io/externallibs.js';
 
 export class ImporterIfc extends ImporterBase
 {
@@ -45,6 +46,7 @@ export class ImporterIfc extends ImporterBase
         if (this.ifc === null) {
             LoadExternalLibrary ('webifc').then (() => {
                 this.ifc = new WebIFC.IfcAPI ();
+                this.ifc.SetWasmPath (GetExternalLibraryUrl ('webifc/', 'https://cdn.jsdelivr.net/npm/web-ifc@0.0.68/'), true);
                 this.ifc.Init ().then (() => {
                     this.ImportIfcContent (fileContent);
                     onFinish ();

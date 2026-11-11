@@ -291,9 +291,27 @@ export class Website
         this.measureTool.SetActive (false);
     }
 
+    BeginNativeStream (root)
+    {
+        this.ClearModel ();
+        document.body.classList.add ('o3dv-native-stream');
+        this.SetUIState (WebsiteUIState.Model);
+        this.viewer.SetMainObject (root);
+        this.layouter.Resize ();
+    }
+
     OnModelLoaded (importResult, threeObject)
     {
         this.model = importResult.model;
+        this.lastImportDetails = {
+            meshCount : this.model.MeshCount (),
+            objectCount : this.model.MeshInstanceCount (),
+            vertices : this.model.VertexCount (),
+            triangles : this.model.TriangleCount (),
+            materialCount : this.model.MaterialCount (),
+            usedFiles : importResult.usedFiles,
+            missingFiles : importResult.missingFiles
+        };
         this.parameters.fileNameDiv.innerHTML = importResult.mainFile;
         this.viewer.SetMainObject (threeObject);
         this.viewer.SetUpVector (Direction.Y, false);
@@ -420,6 +438,10 @@ export class Website
 
     FitModelToWindow (onLoad)
     {
+        if (this.nativeStream?.active) {
+            this.nativeStream.FitToWindow ();
+            return;
+        }
         let animation = !onLoad;
         let boundingSphere = this.viewer.GetBoundingSphere ((meshUserData) => {
             return this.navigator.IsMeshVisible (meshUserData.originalMeshInstance.id);
@@ -657,7 +679,11 @@ export class Website
         let projectionModeIndex = (this.cameraSettings.projectionMode === ProjectionMode.Perspective ? 0 : 1);
 
         AddButton (this.toolbar, 'open', Loc ('Open from your device'), [], () => {
-            this.OpenFileBrowserDialog ();
+            if (window.O3DVNativeBridge === true) {
+                window.webkit?.messageHandlers?.o3dv?.postMessage ({ type : 'request_file_picker' });
+            } else {
+                this.OpenFileBrowserDialog ();
+            }
         });
         AddButton (this.toolbar, 'open_url', Loc ('Open from url'), [], () => {
             ShowOpenUrlDialog ((urls) => {

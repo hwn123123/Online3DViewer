@@ -1,0 +1,22 @@
+[package]
+name = "o3dv-cad"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[[bin]]
+name = "cad-stream"
+path = "src/main.rs"
+
+[dependencies]
+acadrust = { path = "../../build/ios/acadrust-ios", default-features = false, features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+earcutr = "0.4"
+
+[profile.release]
+opt-level = 3
+panic = "unwind"

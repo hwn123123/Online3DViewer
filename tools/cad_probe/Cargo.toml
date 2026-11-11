@@ -1,0 +1,13 @@
+[package]
+name = "o3dv-cad-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+acadrust = { path = "../../build/ios/acadrust-upstream", default-features = false, features = ["serde"] }
+serde_json = "1"
+libc = "0.2"
+
+[profile.release]
+opt-level = 3

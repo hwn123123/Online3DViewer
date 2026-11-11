@@ -415,7 +415,11 @@ export class Viewer
         }
 
         this.shadingModel.UpdateByCamera (navigationCamera);
-        this.renderer.render (this.scene, this.camera);
+        if (this.renderOverride) {
+            this.renderOverride ();
+        } else {
+            this.renderer.render (this.scene, this.camera);
+        }
     }
 
     SetMainObject (object)

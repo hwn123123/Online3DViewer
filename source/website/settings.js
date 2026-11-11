@@ -61,18 +61,22 @@ export class CameraSettings
     constructor ()
     {
         this.navigationMode = NavigationMode.FixedUpVector;
+        this.navigationModeCookieName = 'ov_navigation_mode';
         this.projectionMode = ProjectionMode.Perspective;
     }
 
     LoadFromCookies ()
     {
-        this.navigationMode = CookieGetIntVal ('ov_navigation_mode', NavigationMode.FixedUpVector);
+        const nativeApp = window.O3DVNativeBridge === true;
+        this.navigationModeCookieName = nativeApp ? 'ov_app_navigation_mode' : 'ov_navigation_mode';
+        const defaultMode = nativeApp ? NavigationMode.FreeOrbit : NavigationMode.FixedUpVector;
+        this.navigationMode = CookieGetIntVal (this.navigationModeCookieName, defaultMode);
         this.projectionMode = CookieGetIntVal ('ov_projection_mode', ProjectionMode.Perspective);
     }
 
     SaveToCookies ()
     {
-        CookieSetIntVal ('ov_navigation_mode', this.navigationMode);
+        CookieSetIntVal (this.navigationModeCookieName, this.navigationMode);
         CookieSetIntVal ('ov_projection_mode', this.projectionMode);
     }
 }

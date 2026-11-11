@@ -16,6 +16,12 @@ export class ThreeModelLoaderUI
 
     LoadModel (inputFiles, settings, callbacks)
     {
+        const nativeApp = window.O3DVNativeBridge === true;
+        const reportProgress = (phase, current = 0, total = 0) => {
+            if (nativeApp) {
+                window.webkit?.messageHandlers?.o3dv?.postMessage ({ type : 'load_progress', phase, current, total });
+            }
+        };
         if (this.modelLoader.InProgress ()) {
             return;
         }
@@ -27,23 +33,32 @@ export class ThreeModelLoaderUI
                 callbacks.onStart ();
                 progressDialog = new ProgressDialog ();
                 progressDialog.Init (Loc ('Loading Model'));
-                progressDialog.Open ();
+                if (!nativeApp) {
+                    progressDialog.Open ();
+                }
+                reportProgress ('files');
             },
             onFileListProgress : (current, total) => {
+                reportProgress ('files', current, total);
             },
             onFileLoadProgress : (current, total) => {
+                reportProgress ('files', current, total);
             },
             onSelectMainFile : (fileNames, selectFile) => {
                 progressDialog.Close ();
                 this.modalDialog = this.ShowFileSelectorDialog (fileNames, (index) => {
-                    progressDialog.Open ();
+                    if (!nativeApp) {
+                        progressDialog.Open ();
+                    }
                     selectFile (index);
                 });
             },
             onImportStart : () => {
+                reportProgress ('import');
                 progressDialog.SetText (Loc ('Importing Model'));
             },
             onVisualizationStart : () => {
+                reportProgress ('display');
                 progressDialog.SetText (Loc ('Visualizing Model'));
             },
             onModelFinished : (importResult, threeObject) => {

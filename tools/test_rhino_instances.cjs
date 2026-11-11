@@ -1,0 +1,21 @@
+const {chromium}=require(process.env.O3DV_PLAYWRIGHT_MODULE || 'playwright');
+const fs=require('fs');
+(async()=>{
+ const browser=await chromium.launch({...(process.env.O3DV_BROWSER_EXECUTABLE?{executablePath:process.env.O3DV_BROWSER_EXECUTABLE}:{}),headless:true,args:['--use-angle=swiftshader','--enable-webgl','--ignore-gpu-blocklist']});
+ const page=await browser.newPage({viewport:{width:640,height:700}});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
+ await page.addInitScript(()=>{window.events=[];window.webkit={messageHandlers:{o3dv:{postMessage:m=>window.events.push(m)}}};});await page.goto('http://127.0.0.1:8097/');await page.waitForFunction(()=>typeof window.O3DVOpenStream==='function');
+ async function wait(type){await page.waitForFunction(t=>window.events.some(m=>m.type==='javascript_error'||(m.type===t&&(t!=='stream_view_progress'||m.complete))),type,{timeout:40000});const s=await page.evaluate(t=>window.events.find(m=>m.type==='javascript_error'||(m.type===t&&(t!=='stream_view_progress'||m.complete))),type);if(s.type==='javascript_error')throw Error(JSON.stringify(s));return s;}
+ async function open(name,budget=4*1048576){await page.evaluate(({name,budget})=>{window.events=[];window.O3DVSetMemoryPolicy({geometryBytes:budget,textureBytes:1048576,framePixels:1000000});window.O3DVOpenStream(location.origin+'/models/'+name+'/manifest.json');},{name,budget});return wait('model_loaded');}
+ async function pixels(){return page.evaluate(async()=>{const b=await createImageBitmap(await(await fetch(window.O3DVGetThumbnail())).blob());const c=document.createElement('canvas');c.width=b.width;c.height=b.height;c.getContext('2d').drawImage(b,0,0);return Array.from(c.getContext('2d').getImageData(0,0,c.width,c.height).data);});}
+ function difference(a,b){let n=0;for(let i=0;i<a.length;i++)if(Math.abs(a[i]-b[i])>2)n++;return n;}
+ const state=await open('rhino-instances');const expected=await pixels();if(new Set(expected).size<8)throw Error('Blank instance frame');await page.screenshot({path:'build/ios/rhino-geometry-tests/instances-browser.png'});
+ const low=await open('rhino-instances',262144);if(low.residentPeakBytes>262144)throw Error('Instance geometry budget exceeded');if(difference(expected,await pixels())>20)throw Error('Low-budget instance frame differs');console.log('PASS complete instances under a 256 KiB geometry budget');
+ await open('rhino-instances-baked');const mismatch=difference(expected,await pixels());if(mismatch>500)throw Error('Independent baked geometry differs in '+mismatch+' samples');console.log('PASS nested placement, mirror/shear and normals match independently baked geometry',mismatch);
+ await open('rhino-instances');await page.evaluate(()=>{window.events=[];window.O3DVSetStreamLayers({'1':false});});await wait('stream_view_progress');const hidden=await pixels();if(difference(expected,hidden)<10000)throw Error('Parent instance layer did not hide its children');
+ await page.evaluate(()=>{window.events=[];window.O3DVSetStreamLayers({'1':true});});await wait('stream_view_progress');if(difference(expected,await pixels())>20)throw Error('Instance layer restore differs');
+ await page.evaluate(()=>{window.events=[];window.O3DVSetStreamLayers({'2':true});});await wait('stream_view_progress');if(difference(expected,await pixels())<1000)throw Error('Hidden ancestor layer was not respected');console.log('PASS instance and ancestor layer overrides');
+ for(const name of ['rhino-instance-mesh','rhino-instance-line']){
+  const manifest=JSON.parse(fs.readFileSync('build/ios/memory-stream-tests/fixtures/'+name+'/manifest.json'));await open(name,262144);await page.evaluate(()=>window.events=[]);await page.locator('#viewer').click();const selected=await wait('stream_selection');if(selected.object.id!==manifest.objects[0].id)throw Error('Picked the wrong placed object: '+JSON.stringify(selected));await wait('stream_view_progress');console.log('PASS picking transformed '+name);
+ }
+ if(errors.length)throw Error(errors.join('\n'));fs.writeFileSync('build/ios/rhino-geometry-tests/browser-results.json',JSON.stringify({passed:true,highBudget:state,lowBudget:low,bakedPixelMismatch:mismatch},null,2));await browser.close();console.log('PASS block rendering checks');
+})().catch(e=>{console.error(e);process.exit(1)});

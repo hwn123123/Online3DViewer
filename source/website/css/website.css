@@ -414,3 +414,21 @@ div.ov_bottom_floating_panel
 }
 
 }
+body.o3dv-native-stream .main_left_container,
+body.o3dv-native-stream .main_right_container,
+body.o3dv-native-stream [data-icon="measure"],
+body.o3dv-native-stream [data-icon="download"],
+body.o3dv-native-stream [data-icon="export"],
+body.o3dv-native-stream [data-icon="share"] {
+    display: none !important;
+}
+
+/* These persistent choices are managed by the native settings sheet. */
+body.o3dv-native-app [data-icon="fix_up_on"],
+body.o3dv-native-app [data-icon="fix_up_off"],
+body.o3dv-native-app [data-icon="camera_perspective"],
+body.o3dv-native-app [data-icon="camera_orthographic"],
+body.o3dv-native-app [data-icon="dark_mode"],
+body.o3dv-native-app [data-icon="light_mode"] {
+    display: none !important;
+}
