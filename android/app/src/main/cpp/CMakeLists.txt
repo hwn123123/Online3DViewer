@@ -1,0 +1,13 @@
+cmake_minimum_required(VERSION 3.22)
+project(o3dv_rhino LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+if(NOT DEFINED OPENNURBS_SOURCE OR NOT EXISTS "${OPENNURBS_SOURCE}/opennurbs.h")
+  message(FATAL_ERROR "Set OPENNURBS_SOURCE to the pinned openNURBS source directory")
+endif()
+add_subdirectory("${OPENNURBS_SOURCE}" "${CMAKE_CURRENT_BINARY_DIR}/opennurbs" EXCLUDE_FROM_ALL)
+# Android's default unsigned char changes archive EOF comparisons in openNURBS.
+target_compile_options(opennurbsStatic PRIVATE -fsigned-char)
+add_library(o3dv_rhino SHARED rhino_stream.cpp)
+target_include_directories(o3dv_rhino PRIVATE "${OPENNURBS_SOURCE}")
+target_link_libraries(o3dv_rhino PRIVATE opennurbsStatic android log)

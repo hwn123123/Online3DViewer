@@ -65,10 +65,16 @@ public final class MainActivity extends Activity {
     private final ExecutorService importer = Executors.newSingleThreadExecutor();
     private WebView web;
     private TextView title, status;
+    private JSONArray unsupportedDetails;
+    private JSONArray displayWarnings;
+    private JSONArray modelLayers;
+    private final Map<Integer, Boolean> layerOverrides = new HashMap<>();
     private Button open;
     private Button cancel;
+    private Button layersButton;
     private FrameLayout busyOverlay;
     private boolean ready, loading;
+    private boolean resetting;
     private JSONArray waiting;
     private boolean waitingStream;
     private boolean streaming;
@@ -109,6 +115,11 @@ public final class MainActivity extends Activity {
         open.setText("打开文件");
         open.setOnClickListener(v -> pickFiles());
         header.addView(open);
+        layersButton = new Button(this);
+        layersButton.setText("图层");
+        layersButton.setVisibility(View.GONE);
+        layersButton.setOnClickListener(v -> showLayers());
+        header.addView(layersButton);
         cancel = new Button(this);
         cancel.setText("取消");
         cancel.setVisibility(View.GONE);
@@ -117,6 +128,21 @@ public final class MainActivity extends Activity {
         root.addView(header);
         status = new TextView(this);
         status.setText("本机离线测试版 · 请选择模型文件");
+        status.setOnClickListener(v -> {
+            if ((unsupportedDetails == null || unsupportedDetails.length() == 0) && (displayWarnings == null || displayWarnings.length() == 0)) return;
+            StringBuilder text = new StringBuilder();
+            if(displayWarnings!=null)for(int i=0;i<displayWarnings.length();i++) {
+                if(text.length()>0)text.append('\n');text.append(displayWarnings.optString(i));
+            }
+            for (int i=0;unsupportedDetails!=null && i<unsupportedDetails.length();i++) {
+                JSONObject item=unsupportedDetails.optJSONObject(i);
+                if(item==null)continue;
+                if(text.length()>0)text.append('\n');
+                text.append(item.optString("name").isEmpty()?item.optString("type", "对象"):item.optString("name"));
+                String reason=item.optString("reason");if(!reason.isEmpty())text.append("：").append(reason);
+            }
+            new AlertDialog.Builder(this).setTitle("显示说明").setMessage(text.toString()).setPositiveButton("确定",null).show();
+        });
         status.setPadding(dp(16), dp(5), dp(16), dp(7));
         root.addView(status);
         FrameLayout container = new FrameLayout(this);
@@ -155,6 +181,8 @@ public final class MainActivity extends Activity {
                 pickFiles();
             } else if ("fixture".equals(sample)) {
                 importFiles(Arrays.asList(Uri.parse("content://com.hwn.modelviewer.test/fixture")));
+            } else if ("fixture3dm".equals(sample)) {
+                importFiles(Arrays.asList(Uri.parse("content://com.hwn.modelviewer.test/fixture3dm")));
             } else if ("import".equals(sample)) {
                 try (InputStream input = getAssets().open("assets/models/utah_teapot.stl");
                      FileOutputStream output = new FileOutputStream(new File(getCacheDir(), "android-test-teapot.stl"))) {
@@ -249,9 +277,15 @@ public final class MainActivity extends Activity {
         ActivityManager manager = (ActivityManager)getSystemService(ACTIVITY_SERVICE);
         final long maxBytes = Math.min(128L * 1024 * 1024, (long)manager.getMemoryClass() * 1024 * 1024 / 5);
         final boolean stl = ext(names.get(0)).equals("stl");
+        final boolean rhino = ext(names.get(0)).equals("3dm");
+        unsupportedDetails = null;
+        displayWarnings = null;
+        modelLayers = null;
+        layerOverrides.clear();
+        layersButton.setVisibility(View.GONE);
         final AtomicBoolean cancelled = new AtomicBoolean(false);
         cancellation = cancelled;
-        streaming = stl;
+        streaming = stl || rhino;
         importer.execute(() -> {
             try {
                 if (!directory.mkdirs()) throw new Exception("无法创建缓存目录");
@@ -269,7 +303,7 @@ public final class MainActivity extends Activity {
                         while ((n = input.read(buffer)) != -1) {
                             checkResources(cancelled, directory, n);
                             copied += n;
-                            if (!stl && copied > maxBytes) throw new Exception("此格式的原生分块读取尚未移植，请先用较小的模型测试。");
+                            if (!stl && !rhino && copied > maxBytes) throw new Exception("此格式的原生分块读取尚未移植，请先用较小的模型测试。");
                             output.write(buffer, 0, n);
                             if (System.nanoTime() - lastReport > 250_000_000L) {
                                 lastReport = System.nanoTime();
@@ -308,6 +342,31 @@ public final class MainActivity extends Activity {
                     reader.convert();
                     return;
                 }
+                if (rhino) {
+                    File modelFile = new File(directory, names.get(0));
+                    File streamDirectory = new File(directory, "stream");
+                    RhinoStreamReader reader = new RhinoStreamReader(modelFile, streamDirectory, new RhinoStreamReader.Listener() {
+                        private long lastReport;
+                        @Override public void checkpoint() throws IOException { checkResources(cancelled, directory, 0); }
+                        @Override public void progress(long objects) {
+                            if (System.nanoTime() - lastReport < 200_000_000L) return;
+                            lastReport = System.nanoTime();
+                            runOnUiThread(() -> { if (!cancelled.get()) status.setText("正在分块读取 · 已读取 " + objects + " 个对象"); });
+                        }
+                        @Override public void manifestReady(File manifest) {
+                            runOnUiThread(() -> {
+                                if (cancelled.get() || isFinishing() || isDestroyed()) return;
+                                currentImport = directory;
+                                title.setText(names.get(0));
+                                waiting = new JSONArray().put(BASE + "imports/" + directory.getName() + "/stream/manifest.json");
+                                waitingStream = true;
+                                startPending();
+                            });
+                        }
+                    });
+                    reader.convert();
+                    return;
+                }
                 runOnUiThread(() -> {
                     if (cancelled.get() || isFinishing() || isDestroyed()) return;
                     waiting = urls;
@@ -318,19 +377,22 @@ public final class MainActivity extends Activity {
                     startPending();
                 });
             } catch (Exception | OutOfMemoryError e) {
-                deleteTree(directory);
+                if (cancelled.get()) { deleteTree(directory); return; }
                 runOnUiThread(() -> {
-                    if (cancelled.get() || isFinishing() || isDestroyed()) return;
+                    if (cancelled.get() || isFinishing() || isDestroyed()) { cleanupLater(directory); return; }
                     try { debugStatus(new JSONObject().put("type", "native_read_error").put("message", e.getMessage())); }
                     catch (org.json.JSONException ignored) { }
+                    if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) android.util.Log.w("O3DVReader", "读取失败", e);
                     setLoading(false, "导入失败，可重新选择文件");
                     streaming = false;
                     waiting = null;
                     ready = false;
+                    resetting = true;
                     web.evaluateJavascript("window.O3DVStop?.();", null);
                     web.reload();
                     title.setText("3D 模型查看器 · 安卓测试");
                     showError(e instanceof OutOfMemoryError ? "设备可用内存不足，已停止读取。" : (e.getMessage() == null ? "无法读取所选文件" : e.getMessage()));
+                    cleanupLater(directory);
                 });
             }
         });
@@ -352,6 +414,7 @@ public final class MainActivity extends Activity {
     private void setLoading(boolean value, String message) {
         loading = value;
         open.setEnabled(!value);
+        layersButton.setEnabled(!value);
         cancel.setVisibility(value ? View.VISIBLE : View.GONE);
         busyOverlay.setVisibility(value ? View.VISIBLE : View.GONE);
         status.setText(message);
@@ -361,6 +424,28 @@ public final class MainActivity extends Activity {
         return String.format(Locale.ROOT, "%.1f MiB", bytes / 1048576.0);
     }
 
+    private void showLayers() {
+        if (loading || modelLayers == null || modelLayers.length() == 0) return;
+        String[] labels = new String[modelLayers.length()];
+        boolean[] selected = new boolean[modelLayers.length()];
+        int[] ids = new int[modelLayers.length()];
+        for (int i=0;i<modelLayers.length();i++) {
+            JSONObject layer=modelLayers.optJSONObject(i);
+            ids[i]=layer.optInt("index");
+            labels[i]=layer.optString("name", "图层 " + ids[i]);
+            selected[i]=layerOverrides.getOrDefault(ids[i], layer.optBoolean("visible", true));
+        }
+        new AlertDialog.Builder(this).setTitle("图层")
+            .setMultiChoiceItems(labels, selected, (dialog, which, checked) -> selected[which]=checked)
+            .setPositiveButton("应用", (dialog, which) -> {
+                JSONObject values=new JSONObject();
+                try {
+                    for(int i=0;i<ids.length;i++) { layerOverrides.put(ids[i],selected[i]); values.put(Integer.toString(ids[i]),selected[i]); }
+                    web.evaluateJavascript("window.O3DVSetStreamLayers("+values+");", null);
+                } catch (org.json.JSONException ignored) { }
+            }).setNegativeButton("取消", null).show();
+    }
+
     private void checkResources(AtomicBoolean cancelled, File directory, long required) throws IOException {
         if (cancelled.get() || Thread.currentThread().isInterrupted()) throw new IOException("读取已取消。");
         if (severeMemoryPressure) throw new IOException("设备可用内存不足，已停止读取。");
@@ -368,7 +453,8 @@ public final class MainActivity extends Activity {
         ((ActivityManager)getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(info);
         Runtime runtime = Runtime.getRuntime();
         long javaAvailable = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
-        if (info.lowMemory || javaAvailable < 8L * 1024 * 1024) throw new IOException("设备可用内存不足，已停止读取。");
+        if (info.lowMemory || javaAvailable < 8L * 1024 * 1024 || android.os.Debug.getNativeHeapAllocatedSize() > 512L * 1024 * 1024)
+            throw new IOException("设备可用内存不足，已停止读取。");
         long free = directory.getUsableSpace();
         if (free < StlStreamReader.STORAGE_RESERVE || required > free - StlStreamReader.STORAGE_RESERVE)
             throw new IOException("设备存储空间不足，请清理空间后重试。");
@@ -378,11 +464,14 @@ public final class MainActivity extends Activity {
         if (!loading) return;
         if (cancellation != null) cancellation.set(true);
         final File doomed = activeDirectory;
-        if (doomed != null) importer.execute(() -> deleteTree(doomed));
+        if (doomed != null) cleanupLater(doomed);
         activeDirectory = null;
         waiting = null;
         streaming = false;
+        modelLayers = null;
+        layersButton.setVisibility(View.GONE);
         ready = false;
+        resetting = true;
         web.evaluateJavascript("window.O3DVStop?.();", null);
         web.reload();
         title.setText("3D 模型查看器 · 安卓测试");
@@ -408,12 +497,21 @@ public final class MainActivity extends Activity {
                 try {
                     JSONObject message = new JSONObject(json);
                     String type = message.optString("type");
+                    if (resetting && !type.equals("ready")) return;
                     if (type.equals("model_loaded") || type.equals("javascript_error") || type.equals("stream_progress")) debugStatus(message);
-                    if (type.equals("ready")) { ready = true; startPending(); }
+                    if (type.equals("ready")) { resetting = false; ready = true; startPending(); }
                     else if (type.equals("request_file_picker")) pickFiles();
+                    else if (type.equals("stream_metadata")) {
+                        JSONArray availableLayers=message.optJSONArray("layers");
+                        if(availableLayers!=null && availableLayers.length()>0)modelLayers=availableLayers;
+                    }
                     else if (type.equals("model_loaded")) {
                         JSONArray missing = message.optJSONArray("missingFiles");
-                        setLoading(false, missing != null && missing.length() > 0 ? "模型已显示，部分配套文件缺失" : "模型已显示");
+                        int unsupported = message.optInt("unsupportedCount");
+                        unsupportedDetails = message.optJSONArray("unsupportedObjects");
+                        displayWarnings = message.optJSONArray("warnings");
+                        setLoading(false, missing != null && missing.length() > 0 ? "模型已显示，部分配套文件缺失" : unsupported > 0 ? "模型已显示 · " + unsupported + " 个对象暂不支持，点击查看" : displayWarnings != null && displayWarnings.length() > 0 ? "模型已显示 · 点击查看显示说明" : "模型已显示");
+                        layersButton.setVisibility(modelLayers != null && modelLayers.length() > 0 ? View.VISIBLE : View.GONE);
                         streaming = false;
                         cancellation = null;
                         activeDirectory = null;
@@ -431,12 +529,13 @@ public final class MainActivity extends Activity {
                     } else if (type.equals("no_importable_file") || type.equals("failed_to_load_file") || type.equals("import_failed") || type.equals("javascript_error")) {
                         if (cancellation != null) cancellation.set(true);
                         File failed = activeDirectory;
-                        if (failed != null) importer.execute(() -> deleteTree(failed));
+                        if (failed != null) cleanupLater(failed);
                         activeDirectory = null;
                         streaming = false;
                         setLoading(false, "打开失败，可重新选择文件");
                         waiting = null;
                         ready = false;
+                        resetting = true;
                         web.evaluateJavascript("window.O3DVStop?.();", null);
                         web.reload();
                         title.setText("3D 模型查看器 · 安卓测试");
@@ -573,6 +672,11 @@ public final class MainActivity extends Activity {
         File[] children = file.listFiles();
         if (children != null) for (File child : children) deleteTree(child);
         file.delete();
+    }
+
+    private void cleanupLater(File directory) {
+        try { importer.execute(() -> deleteTree(directory)); }
+        catch (java.util.concurrent.RejectedExecutionException e) { new Thread(() -> deleteTree(directory), "viewer-cleanup").start(); }
     }
 
     @Override protected void onDestroy() {

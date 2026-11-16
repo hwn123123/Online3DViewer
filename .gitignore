@@ -5,5 +5,6 @@ __pycache__
 ios/**/*.xcuserstate
 ios/**/xcuserdata/
 android/.gradle/
+android/**/.cxx/
 android/**/build/
 android/local.properties

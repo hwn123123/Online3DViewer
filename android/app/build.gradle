@@ -3,12 +3,24 @@ plugins { id 'com.android.application' }
 android {
     namespace 'com.hwn.modelviewer'
     compileSdk 35
+    ndkVersion '27.2.12479018'
+    externalNativeBuild {
+        cmake { path 'src/main/cpp/CMakeLists.txt'; version '3.22.1' }
+    }
     defaultConfig {
         applicationId 'com.hwn.modelviewer'
-        minSdk 26
+        // The pinned openNURBS Android build uses the platform font API introduced in Android 10.
+        minSdk 29
         targetSdk 35
         versionCode 1
         versionName '0.1.0'
+        ndk { abiFilters 'arm64-v8a' }
+        externalNativeBuild {
+            cmake {
+                targets 'o3dv_rhino'
+                arguments '-DOPENNURBS_SOURCE=' + file("${rootProject.projectDir}/../build/ios/opennurbs-src").absolutePath
+            }
+        }
     }
     sourceSets.main.assets.srcDirs = ["${rootProject.projectDir}/../build/ios/WebAssets"]
     compileOptions {
