@@ -83,6 +83,9 @@ public final class MainActivity extends Activity {
     private File activeDirectory;
     private File imports;
     private File currentImport;
+    private boolean benchmarkStarted;
+    private long lastMemoryPressureMs;
+    private boolean foreground;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -170,6 +173,14 @@ public final class MainActivity extends Activity {
         handleIntent(getIntent());
         if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
             String sample = getIntent().getStringExtra("debug-sample");
+            String cacheId = getIntent().getStringExtra("debug-cache");
+            if (cacheId != null && cacheId.matches("[0-9a-f-]{36}") && new File(imports, cacheId + "/stream/manifest.json").isFile()) {
+                currentImport = new File(imports, cacheId);
+                waiting = new JSONArray().put(BASE + "imports/" + cacheId + "/stream/manifest.json");
+                waitingStream = true;
+                streaming = true;
+                setLoading(true, "正在打开测试模型…");
+            }
             if ("teapot".equals(sample)) {
                 waiting = new JSONArray().put(BASE + "assets/models/utah_teapot.stl");
                 setLoading(true, "正在打开内置测试模型…");
@@ -404,9 +415,9 @@ public final class MainActivity extends Activity {
         waiting = null;
         if (waitingStream) {
             String url = JSONObject.quote(urls.optString(0));
-            int budget = 50331648;
+            int budget = geometryBudget();
             if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0)
-                budget = Math.max(262144, Math.min(budget, getIntent().getIntExtra("debug-budget", budget)));
+                budget = Math.max(262144, Math.min(201326592, getIntent().getIntExtra("debug-budget", budget)));
             web.evaluateJavascript("window.O3DVSetMemoryPolicy({geometryBytes:" + budget + ",textureBytes:12582912,framePixels:2000000});window.O3DVOpenStream(" + url + ");", null);
         } else web.evaluateJavascript("window.O3DVOpenFiles(" + urls.toString() + ");", null);
     }
@@ -422,6 +433,13 @@ public final class MainActivity extends Activity {
 
     private static String formatBytes(long bytes) {
         return String.format(Locale.ROOT, "%.1f MiB", bytes / 1048576.0);
+    }
+
+    private int geometryBudget() {
+        ActivityManager manager = (ActivityManager)getSystemService(ACTIVITY_SERVICE);
+        ActivityManager.MemoryInfo info = new ActivityManager.MemoryInfo();
+        manager.getMemoryInfo(info);
+        return MemoryPolicy.geometryBytes(info.totalMem, info.availMem, manager.isLowRamDevice(), info.lowMemory);
     }
 
     private void showLayers() {
@@ -498,7 +516,7 @@ public final class MainActivity extends Activity {
                     JSONObject message = new JSONObject(json);
                     String type = message.optString("type");
                     if (resetting && !type.equals("ready")) return;
-                    if (type.equals("model_loaded") || type.equals("javascript_error") || type.equals("stream_progress")) debugStatus(message);
+                    if (type.equals("model_loaded") || type.equals("javascript_error") || type.equals("stream_progress") || type.equals("navigation_benchmark_complete") || (type.equals("stream_view_progress") && message.optBoolean("complete"))) debugStatus(message);
                     if (type.equals("ready")) { resetting = false; ready = true; startPending(); }
                     else if (type.equals("request_file_picker")) pickFiles();
                     else if (type.equals("stream_metadata")) {
@@ -515,6 +533,10 @@ public final class MainActivity extends Activity {
                         streaming = false;
                         cancellation = null;
                         activeDirectory = null;
+                        if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0 && getIntent().getBooleanExtra("debug-benchmark", false) && !benchmarkStarted) {
+                            benchmarkStarted = true;
+                            web.postDelayed(() -> web.evaluateJavascript("window.O3DVBenchmarkNavigation().catch(e=>AndroidBridge.postMessage(JSON.stringify({type:'javascript_error',name:String(e)})));", null), 500);
+                        }
                         final File keep = currentImport;
                         importer.execute(() -> {
                             File[] old = imports.listFiles();
@@ -576,6 +598,7 @@ public final class MainActivity extends Activity {
                     String html = new String(bytes.toByteArray(), StandardCharsets.UTF_8);
                     input.close();
                     String shim = "window.webkit={messageHandlers:{o3dv:{postMessage:function(m){AndroidBridge.postMessage(JSON.stringify(m));}}}};";
+                    if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0 && getIntent().getBooleanExtra("debug-benchmark", false)) shim += "window.O3DVNativeDebug=true;";
                     html = html.replace("window.O3DVNativeBridge = true;", "window.O3DVNativeBridge = true;" + shim);
                     input = new ByteArrayInputStream(html.getBytes(StandardCharsets.UTF_8));
                 }
@@ -689,18 +712,35 @@ public final class MainActivity extends Activity {
     @Override public void onTrimMemory(int level) {
         super.onTrimMemory(level);
         if (level == TRIM_MEMORY_RUNNING_CRITICAL || level >= TRIM_MEMORY_COMPLETE) severeMemoryPressure = true;
-        if (web != null && level >= TRIM_MEMORY_RUNNING_LOW) {
+        if (web != null && (level == TRIM_MEMORY_RUNNING_LOW || level == TRIM_MEMORY_RUNNING_CRITICAL || level >= TRIM_MEMORY_BACKGROUND)) {
+            lastMemoryPressureMs = android.os.SystemClock.elapsedRealtime();
             web.evaluateJavascript("window.O3DVSetMemoryPolicy?.({geometryBytes:12582912,textureBytes:4194304,framePixels:1000000});", null);
+            final long pressureAt = lastMemoryPressureMs;
+            web.postDelayed(() -> {
+                if (lastMemoryPressureMs != pressureAt || !foreground || !ready || loading || web == null) return;
+                ActivityManager.MemoryInfo info = new ActivityManager.MemoryInfo();
+                ((ActivityManager)getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(info);
+                if (info.lowMemory || info.availMem < 1536L * 1024 * 1024) return;
+                severeMemoryPressure = false;
+                int budget = geometryBudget();
+                web.evaluateJavascript("window.O3DVSetMemoryPolicy?.({geometryBytes:"+budget+",textureBytes:12582912,framePixels:2000000});", null);
+            }, 30000);
         }
     }
 
     @Override protected void onResume() {
         super.onResume();
+        foreground = true;
         severeMemoryPressure = false;
         if (web != null) web.evaluateJavascript("window.O3DVSetForeground?.(true);", null);
+        if (web != null && ready && !loading && (lastMemoryPressureMs == 0 || android.os.SystemClock.elapsedRealtime()-lastMemoryPressureMs >= 30000)) {
+            int budget=geometryBudget();
+            web.evaluateJavascript("window.O3DVSetMemoryPolicy?.({geometryBytes:"+budget+",textureBytes:12582912,framePixels:2000000});", null);
+        }
     }
 
     @Override protected void onPause() {
+        foreground = false;
         if (web != null) web.evaluateJavascript("window.O3DVSetForeground?.(false);", null);
         super.onPause();
     }
