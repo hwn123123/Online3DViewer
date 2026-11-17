@@ -12,7 +12,7 @@ cases=[('logo',root/'build/ios/WebAssets/assets/models/RhinoLogo.3dm',root/'buil
 for name,source,reference in cases:
  run('shell','am','force-stop',pkg);run('shell','run-as',pkg,'rm','-f','cache/android-test-fixture.3dm','cache/viewer-debug-status.json')
  run('push',source,'/data/local/tmp/o3dv-fixture.3dm');run('shell','run-as',pkg,'cp','/data/local/tmp/o3dv-fixture.3dm','cache/android-test-fixture.3dm')
- run('shell','am','start','-S','-n',pkg+'/.MainActivity','--es','debug-sample','fixture3dm')
+ run('shell','am','start','-S','-n',pkg+'/.MainActivity','--ez','debug-library-test','true','--es','debug-sample','fixture3dm')
  for i in range(120):
   raw=run('shell','run-as',pkg,'cat','cache/viewer-debug-status.json',check=False)
   try: state=json.loads(raw)
@@ -25,7 +25,7 @@ for name,source,reference in cases:
  assert len(ident)==36 and all(c in '0123456789abcdef-' for c in ident)
  target=out/name;shutil.rmtree(target,ignore_errors=True);target.mkdir()
  archive=target/'cache.tar'
- with archive.open('wb') as fd:subprocess.run(adb+['exec-out','run-as',pkg,'tar','-C','cache/viewer-imports/'+ident,'-cf','-','stream'],stdout=fd,check=True,timeout=90)
+ with archive.open('wb') as fd:subprocess.run(adb+['exec-out','run-as',pkg,'tar','-C','files/model-library-test/'+ident,'-cf','-','stream'],stdout=fd,check=True,timeout=90)
  with tarfile.open(archive) as f:
   for m in f.getmembers():assert (m.name=='stream' or m.name.startswith('stream/')) and '..' not in Path(m.name).parts and not m.issym() and not m.islnk()
   f.extractall(target)

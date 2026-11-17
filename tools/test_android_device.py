@@ -27,7 +27,7 @@ def main():
     try:
         for case in ('teapot', 'glb', '3dm', 'import'):
             run(args.adb, *serial, 'shell', 'am', 'force-stop', PACKAGE)
-            run(args.adb, *serial, 'shell', 'am', 'start', '-n', PACKAGE + '/.MainActivity', '--es', 'debug-sample', case)
+            run(args.adb, *serial, 'shell', 'am', 'start', '-n', PACKAGE + '/.MainActivity', '--ez', 'debug-library-test', 'true', '--es', 'debug-sample', case)
             deadline = time.monotonic() + 35
             seen = []
             while time.monotonic() < deadline:

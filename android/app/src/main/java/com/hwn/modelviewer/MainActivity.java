@@ -28,6 +28,7 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.ScrollView;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -82,7 +83,15 @@ public final class MainActivity extends Activity {
     private AtomicBoolean cancellation;
     private File activeDirectory;
     private File imports;
+    private ModelLibrary library;
+    private LinearLayout libraryRows;
+    private ScrollView libraryView;
+    private FrameLayout viewerContainer;
+    private Button libraryButton;
+    private boolean showingLibrary;
     private File currentImport;
+    private volatile File rebuildingDirectory;
+    private boolean libraryBusy;
     private boolean benchmarkStarted;
     private long lastMemoryPressureMs;
     private boolean foreground;
@@ -91,6 +100,14 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         imports = new File(getCacheDir(), "viewer-imports");
         imports.mkdirs();
+        boolean testLibrary = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0 && getIntent().getBooleanExtra("debug-library-test", false);
+        try { library = new ModelLibrary(getFilesDir(), testLibrary); }
+        catch (IOException e) { throw new IllegalStateException("无法初始化模型库", e); }
+        importer.execute(() -> {
+            library.cleanupInterruptedImports();
+            if (!testLibrary && !getIntent().hasExtra("debug-cache")) library.migrateLegacy(imports);
+            runOnUiThread(() -> {if(showingLibrary && !loading)refreshLibrary();});
+        });
         if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) new File(getCacheDir(), "viewer-debug-status.json").delete();
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -114,6 +131,10 @@ public final class MainActivity extends Activity {
         title.setTextColor(Color.rgb(30, 35, 42));
         header.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
         title.setGravity(Gravity.CENTER_VERTICAL);
+        libraryButton = new Button(this);
+        libraryButton.setText("模型库");
+        libraryButton.setOnClickListener(v -> showLibrary());
+        header.addView(libraryButton);
         open = new Button(this);
         open.setText("打开文件");
         open.setOnClickListener(v -> pickFiles());
@@ -149,6 +170,7 @@ public final class MainActivity extends Activity {
         status.setPadding(dp(16), dp(5), dp(16), dp(7));
         root.addView(status);
         FrameLayout container = new FrameLayout(this);
+        viewerContainer = container;
         web = new WebView(this);
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -168,11 +190,25 @@ public final class MainActivity extends Activity {
         busyOverlay.setVisibility(View.GONE);
         container.addView(busyOverlay, new FrameLayout.LayoutParams(-1, -1));
         root.addView(container, new LinearLayout.LayoutParams(-1, 0, 1));
+        libraryView = new ScrollView(this);
+        libraryRows = new LinearLayout(this);
+        libraryRows.setOrientation(LinearLayout.VERTICAL);
+        libraryRows.setPadding(dp(16), dp(12), dp(16), dp(16));
+        libraryView.addView(libraryRows);
+        root.addView(libraryView, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(root);
         web.loadUrl(BASE + "index.html");
+        showLibrary();
         handleIntent(getIntent());
         if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
             String sample = getIntent().getStringExtra("debug-sample");
+            String libraryId = getIntent().getStringExtra("debug-library-item");
+            if (libraryId != null) openLibraryItem(libraryId);
+            String debugAction = getIntent().getStringExtra("debug-library-action");
+            String debugActionId = getIntent().getStringExtra("debug-action-item");
+            if (debugActionId != null && ("clear".equals(debugAction) || "delete".equals(debugAction)))
+                performLibraryAction(debugActionId, "delete".equals(debugAction));
+            if (sample != null || getIntent().hasExtra("debug-cache")) showViewer();
             String cacheId = getIntent().getStringExtra("debug-cache");
             if (cacheId != null && cacheId.matches("[0-9a-f-]{36}") && new File(imports, cacheId + "/stream/manifest.json").isFile()) {
                 currentImport = new File(imports, cacheId);
@@ -208,8 +244,105 @@ public final class MainActivity extends Activity {
 
     private int dp(int value) { return (int)(value * getResources().getDisplayMetrics().density + .5f); }
 
+    private void showViewer() {
+        showingLibrary=false;
+        if(libraryView!=null)libraryView.setVisibility(View.GONE);
+        if(viewerContainer!=null)viewerContainer.setVisibility(View.VISIBLE);
+        if(status!=null)status.setVisibility(View.VISIBLE);
+    }
+
+    private void showLibrary() {
+        if(loading)return;
+        showingLibrary=true;
+        if(viewerContainer!=null)viewerContainer.setVisibility(View.GONE);
+        if(libraryView!=null)libraryView.setVisibility(View.VISIBLE);
+        if(status!=null)status.setVisibility(View.GONE);
+        if(layersButton!=null)layersButton.setVisibility(View.GONE);
+        if(title!=null)title.setText("模型库");
+        modelLayers=null;layerOverrides.clear();unsupportedDetails=null;displayWarnings=null;
+        if(web!=null && ready) { ready=false;resetting=true;web.evaluateJavascript("window.O3DVStop?.();",null);web.reload(); }
+        refreshLibrary();
+    }
+
+    private void refreshLibrary() {
+        if(libraryRows==null)return;
+        libraryRows.removeAllViews();
+        TextView heading=new TextView(this);heading.setText("最近打开");heading.setTextSize(20);heading.setTextColor(Color.rgb(30,35,42));
+        libraryRows.addView(heading);
+        List<JSONObject> items=library.list();
+        if(items.isEmpty()) {
+            TextView empty=new TextView(this);empty.setText("还没有模型。点击上方“打开文件”导入，模型保存在这台设备上。");
+            empty.setPadding(0,dp(25),0,dp(25));libraryRows.addView(empty);return;
+        }
+        for(JSONObject item:items) {
+            String id=item.optString("id"),name=item.optString("name","模型");
+            LinearLayout card=new LinearLayout(this);card.setOrientation(LinearLayout.VERTICAL);card.setPadding(dp(8),dp(10),dp(8),dp(10));
+            Button openItem=new Button(this);openItem.setText(name+"  ·  "+formatBytes(item.optLong("bytes")));openItem.setAllCaps(false);
+            openItem.setContentDescription("打开 "+name);openItem.setOnClickListener(v -> openLibraryItem(id));card.addView(openItem);
+            LinearLayout actions=new LinearLayout(this);
+            Button clear=new Button(this);clear.setText("清理缓存");clear.setContentDescription(name+" 清理缓存");
+            clear.setOnClickListener(v -> confirmLibraryAction(id,name,false));actions.addView(clear,new LinearLayout.LayoutParams(0,-2,1));
+            Button remove=new Button(this);remove.setText("删除");remove.setContentDescription(name+" 删除");
+            remove.setOnClickListener(v -> confirmLibraryAction(id,name,true));actions.addView(remove,new LinearLayout.LayoutParams(0,-2,1));
+            card.addView(actions);libraryRows.addView(card);
+        }
+    }
+
+    private void confirmLibraryAction(String id,String name,boolean delete) {
+        if(loading || libraryBusy)return;
+        new AlertDialog.Builder(this).setTitle(delete?"删除模型？":"清理显示缓存？")
+            .setMessage(delete?"将删除 App 内的模型副本和缓存，导入前的原始文件不会受影响。":"保留模型文件，下次打开时重新生成显示数据。")
+            .setPositiveButton(delete?"删除":"清理",(dialog,which)-> performLibraryAction(id,delete))
+            .setNegativeButton("取消",null).show();
+    }
+
+    private void performLibraryAction(String id,boolean delete) {
+        if(loading || libraryBusy)return;
+        libraryBusy=true;open.setEnabled(false);libraryButton.setEnabled(false);
+        importer.execute(() -> {
+            try {
+                File dir=library.directory(id);
+                library.read(dir); // Refuse to operate on a directory that is not a saved model.
+                ModelLibrary.remove(delete?dir:new File(dir,"stream"));
+                runOnUiThread(() -> {
+                    libraryBusy=false;open.setEnabled(true);libraryButton.setEnabled(true);refreshLibrary();
+                    try { debugStatus(new JSONObject().put("type","library_action_complete").put("id",id).put("action",delete?"delete":"clear")); }
+                    catch(org.json.JSONException ignored) { }
+                });
+            } catch(IOException e) {runOnUiThread(() -> {libraryBusy=false;open.setEnabled(true);libraryButton.setEnabled(true);showError(e.getMessage());});}
+        });
+    }
+
+    private void openLibraryItem(String id) {
+        if(loading || libraryBusy)return;
+        try {
+            File directory=library.directory(id);JSONObject item=library.read(directory);List<String> names=jsonNames(item);
+            showViewer();setLoading(true,"正在打开模型…");title.setText(item.optString("name"));
+            AtomicBoolean cancelled=new AtomicBoolean(false);cancellation=cancelled;activeDirectory=directory;
+            streaming=ext(names.get(0)).equals("stl")||ext(names.get(0)).equals("3dm");
+            importer.execute(() -> {
+                try {processDirectory(directory,names,cancelled);}
+                catch(Exception | OutOfMemoryError e) {
+                    if(cancelled.get()){cleanupFailed(directory);return;}
+                    runOnUiThread(() -> {
+                        if(cancelled.get()||isFinishing()||isDestroyed())return;
+                        setLoading(false,"打开失败，可重新选择文件");waiting=null;ready=false;resetting=true;
+                        web.evaluateJavascript("window.O3DVStop?.();",null);web.reload();
+                        cleanupFailed(directory);showError(e.getMessage()==null?"模型打开失败。":e.getMessage());showLibrary();
+                    });
+                }
+            });
+        } catch(Exception e){showError(e.getMessage()==null?"模型打开失败。":e.getMessage());}
+    }
+
+    @Override public void onBackPressed() {
+        if(loading){cancelLoading();showLibrary();}
+        else if(!showingLibrary)showLibrary();
+        else super.onBackPressed();
+    }
+
     private void pickFiles() {
-        if (loading) return;
+        if (loading || libraryBusy) return;
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*");
         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         startActivityForResult(intent, PICK);
@@ -266,6 +399,9 @@ public final class MainActivity extends Activity {
         for (int index = 0; index < files.size(); index++) {
             Uri uri = files.get(index);
             String name = fileName(uri);
+            if(name.equals("model.json") || name.equals(".pending") || name.equals("stream") || name.equals(".") || name.equals("..")) {
+                showError("所选文件名与模型库内部名称冲突，请先重命名文件。");return;
+            }
             String extension = ext(name);
             if (extension.equals("max") || extension.equals("blend")) {
                 showError("安卓测试版暂不支持直接打开 MAX 或 BLEND 工程，请先从原软件导出。"); return;
@@ -282,8 +418,9 @@ public final class MainActivity extends Activity {
             orderedFiles.add(0, orderedFiles.remove(primaryIndex));
             names.add(0, names.remove(primaryIndex));
         }
-        setLoading(true, "正在复制文件到设备缓存…");
-        File directory = new File(imports, UUID.randomUUID().toString());
+        showViewer();
+        setLoading(true, "正在复制模型到本机…");
+        File directory = new File(library.root, UUID.randomUUID().toString());
         activeDirectory = directory;
         ActivityManager manager = (ActivityManager)getSystemService(ACTIVITY_SERVICE);
         final long maxBytes = Math.min(128L * 1024 * 1024, (long)manager.getMemoryClass() * 1024 * 1024 / 5);
@@ -294,18 +431,29 @@ public final class MainActivity extends Activity {
         modelLayers = null;
         layerOverrides.clear();
         layersButton.setVisibility(View.GONE);
+        // Stable companion ordering makes duplicate detection independent of picker order.
+        for (int i=1;i<orderedFiles.size();i++) for (int j=i+1;j<orderedFiles.size();j++) if(names.get(i).compareTo(names.get(j))>0) {
+            java.util.Collections.swap(names,i,j); java.util.Collections.swap(orderedFiles,i,j);
+        }
         final AtomicBoolean cancelled = new AtomicBoolean(false);
         cancellation = cancelled;
         streaming = stl || rhino;
         importer.execute(() -> {
+            final File[] workDirectory={directory};
             try {
                 if (!directory.mkdirs()) throw new Exception("无法创建缓存目录");
+                if(!new File(directory,".pending").createNewFile())throw new IOException("无法准备模型导入。");
+                java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
                 long copied = 0;
                 long lastReport = 0;
                 JSONArray urls = new JSONArray();
                 for (int i = 0; i < orderedFiles.size(); i++) {
                     Uri uri = orderedFiles.get(i);
                     String name = names.get(i);
+                    byte[] nameBytes = name.getBytes(StandardCharsets.UTF_8);
+                    digest.update(java.nio.ByteBuffer.allocate(4).putInt(nameBytes.length).array()); digest.update(nameBytes);
+                    java.security.MessageDigest fileDigest=java.security.MessageDigest.getInstance("SHA-256");
+                    long fileBytes=0;
                     try (InputStream input = getContentResolver().openInputStream(uri);
                          FileOutputStream output = new FileOutputStream(new File(directory, name))) {
                         if (input == null) throw new Exception("无法读取 " + name);
@@ -313,7 +461,7 @@ public final class MainActivity extends Activity {
                         int n;
                         while ((n = input.read(buffer)) != -1) {
                             checkResources(cancelled, directory, n);
-                            copied += n;
+                            copied += n; fileBytes += n; fileDigest.update(buffer,0,n);
                             if (!stl && !rhino && copied > maxBytes) throw new Exception("此格式的原生分块读取尚未移植，请先用较小的模型测试。");
                             output.write(buffer, 0, n);
                             if (System.nanoTime() - lastReport > 250_000_000L) {
@@ -323,9 +471,73 @@ public final class MainActivity extends Activity {
                             }
                         }
                     }
-                    urls.put(BASE + "imports/" + directory.getName() + "/" + Uri.encode(name));
+                    digest.update(java.nio.ByteBuffer.allocate(8).putLong(fileBytes).array()); digest.update(fileDigest.digest());
+                    urls.put(BASE + "library/" + directory.getName() + "/" + Uri.encode(name));
                 }
                 checkResources(cancelled, directory, 0);
+                String fingerprint=bytesHex(digest.digest());
+                JSONObject duplicate=library.findFingerprint(fingerprint);
+                if(duplicate!=null) {
+                    ModelLibrary.remove(directory);
+                    File existing=library.directory(duplicate.getString("id"));
+                    workDirectory[0]=existing;
+                    runOnUiThread(() -> { if(!cancelled.get()) { activeDirectory=null; status.setText("已找到相同模型，正在打开…"); } });
+                    processDirectory(existing,jsonNames(duplicate),cancelled);
+                    return;
+                }
+                JSONObject item=new JSONObject().put("id",directory.getName()).put("name",names.get(0))
+                    .put("files",new JSONArray(names)).put("bytes",copied).put("fingerprint",fingerprint)
+                    .put("lastOpened",System.currentTimeMillis());
+                library.write(directory,item);
+                if(!new File(directory,".pending").delete())throw new IOException("无法完成模型导入。");
+                checkResources(cancelled,directory,0);
+                processDirectory(directory,names,cancelled);
+            } catch (Exception | OutOfMemoryError e) {
+                if (cancelled.get()) { cleanupFailed(workDirectory[0]); return; }
+                runOnUiThread(() -> {
+                    if (cancelled.get() || isFinishing() || isDestroyed()) { cleanupFailed(workDirectory[0]); return; }
+                    try { debugStatus(new JSONObject().put("type", "native_read_error").put("message", e.getMessage())); }
+                    catch (org.json.JSONException ignored) { }
+                    if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) android.util.Log.w("O3DVReader", "读取失败", e);
+                    setLoading(false, "导入失败，可重新选择文件");
+                    streaming = false;
+                    waiting = null;
+                    ready = false;
+                    resetting = true;
+                    web.evaluateJavascript("window.O3DVStop?.();", null);
+                    web.reload();
+                    title.setText("3D 模型查看器 · 安卓测试");
+                    showError(e instanceof OutOfMemoryError ? "设备可用内存不足，已停止读取。" : (e.getMessage() == null ? "无法读取所选文件" : e.getMessage()));
+                    cleanupFailed(workDirectory[0]);
+                    showLibrary();
+                });
+            }
+        });
+    }
+
+    private void processDirectory(File directory, List<String> names, AtomicBoolean cancelled) throws Exception {
+        checkResources(cancelled,directory,0);
+        boolean stl=ext(names.get(0)).equals("stl"),rhino=ext(names.get(0)).equals("3dm");
+        JSONArray urls=new JSONArray();
+        for(String name:names) {
+            if(!new File(directory,name).isFile())throw new IOException("模型副本不完整，请重新导入。");
+            urls.put(BASE+"library/"+directory.getName()+"/"+Uri.encode(name));
+        }
+        if((stl || rhino) && library.validCache(directory,ext(names.get(0)))) {
+            runOnUiThread(() -> {
+                if(cancelled.get()||isFinishing()||isDestroyed())return;
+                activeDirectory=null; currentImport=directory; streaming=true; title.setText(names.get(0));
+                waiting=new JSONArray().put(BASE+"library/"+directory.getName()+"/stream/manifest.json");
+                waitingStream=true;status.setText("正在从缓存打开模型…");startPending();
+            });
+            return;
+        }
+        if(stl||rhino) {
+            rebuildingDirectory=directory;
+            runOnUiThread(() -> {if(!cancelled.get())activeDirectory=directory;});
+            checkResources(cancelled,directory,0);
+            ModelLibrary.remove(new File(directory,"stream"));
+        }
                 if (stl) {
                     File modelFile = new File(directory, names.get(0));
                     File streamDirectory = new File(directory, "stream");
@@ -342,9 +554,10 @@ public final class MainActivity extends Activity {
                         @Override public void manifestReady(File manifest) {
                             runOnUiThread(() -> {
                                 if (cancelled.get() || isFinishing() || isDestroyed()) return;
+                                if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0 && getIntent().getBooleanExtra("debug-library-test", false) && getIntent().getBooleanExtra("debug-cancel-on-stream", false)) { cancelLoading(); return; }
                                 currentImport = directory;
                                 title.setText(names.get(0));
-                                waiting = new JSONArray().put(BASE + "imports/" + directory.getName() + "/stream/manifest.json");
+                                waiting = new JSONArray().put(BASE + "library/" + directory.getName() + "/stream/manifest.json");
                                 waitingStream = true;
                                 startPending();
                             });
@@ -369,7 +582,7 @@ public final class MainActivity extends Activity {
                                 if (cancelled.get() || isFinishing() || isDestroyed()) return;
                                 currentImport = directory;
                                 title.setText(names.get(0));
-                                waiting = new JSONArray().put(BASE + "imports/" + directory.getName() + "/stream/manifest.json");
+                                waiting = new JSONArray().put(BASE + "library/" + directory.getName() + "/stream/manifest.json");
                                 waitingStream = true;
                                 startPending();
                             });
@@ -387,26 +600,14 @@ public final class MainActivity extends Activity {
                     status.setText("正在解析模型，请稍候…");
                     startPending();
                 });
-            } catch (Exception | OutOfMemoryError e) {
-                if (cancelled.get()) { deleteTree(directory); return; }
-                runOnUiThread(() -> {
-                    if (cancelled.get() || isFinishing() || isDestroyed()) { cleanupLater(directory); return; }
-                    try { debugStatus(new JSONObject().put("type", "native_read_error").put("message", e.getMessage())); }
-                    catch (org.json.JSONException ignored) { }
-                    if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) android.util.Log.w("O3DVReader", "读取失败", e);
-                    setLoading(false, "导入失败，可重新选择文件");
-                    streaming = false;
-                    waiting = null;
-                    ready = false;
-                    resetting = true;
-                    web.evaluateJavascript("window.O3DVStop?.();", null);
-                    web.reload();
-                    title.setText("3D 模型查看器 · 安卓测试");
-                    showError(e instanceof OutOfMemoryError ? "设备可用内存不足，已停止读取。" : (e.getMessage() == null ? "无法读取所选文件" : e.getMessage()));
-                    cleanupLater(directory);
-                });
-            }
-        });
+    }
+
+    private static List<String> jsonNames(JSONObject item) throws org.json.JSONException {
+        List<String> result=new ArrayList<>();JSONArray names=item.getJSONArray("files");
+        for(int i=0;i<names.length();i++)result.add(names.getString(i));return result;
+    }
+    private static String bytesHex(byte[] data) {
+        StringBuilder value=new StringBuilder();for(byte b:data)value.append(String.format(Locale.ROOT,"%02x",b & 255));return value.toString();
     }
 
     private void startPending() {
@@ -425,6 +626,7 @@ public final class MainActivity extends Activity {
     private void setLoading(boolean value, String message) {
         loading = value;
         open.setEnabled(!value);
+        libraryButton.setEnabled(!value);
         layersButton.setEnabled(!value);
         cancel.setVisibility(value ? View.VISIBLE : View.GONE);
         busyOverlay.setVisibility(value ? View.VISIBLE : View.GONE);
@@ -482,7 +684,7 @@ public final class MainActivity extends Activity {
         if (!loading) return;
         if (cancellation != null) cancellation.set(true);
         final File doomed = activeDirectory;
-        if (doomed != null) cleanupLater(doomed);
+        if (doomed != null) cleanupFailed(doomed);
         activeDirectory = null;
         waiting = null;
         streaming = false;
@@ -494,6 +696,7 @@ public final class MainActivity extends Activity {
         web.reload();
         title.setText("3D 模型查看器 · 安卓测试");
         setLoading(false, "已取消，可重新选择模型");
+        showLibrary();
         try { debugStatus(new JSONObject().put("type", "load_cancelled")); }
         catch (org.json.JSONException ignored) { }
     }
@@ -533,14 +736,15 @@ public final class MainActivity extends Activity {
                         streaming = false;
                         cancellation = null;
                         activeDirectory = null;
+                        rebuildingDirectory = null;
                         if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0 && getIntent().getBooleanExtra("debug-benchmark", false) && !benchmarkStarted) {
                             benchmarkStarted = true;
                             web.postDelayed(() -> web.evaluateJavascript("window.O3DVBenchmarkNavigation().catch(e=>AndroidBridge.postMessage(JSON.stringify({type:'javascript_error',name:String(e)})));", null), 500);
                         }
-                        final File keep = currentImport;
-                        importer.execute(() -> {
-                            File[] old = imports.listFiles();
-                            if (old != null) for (File file : old) if (!file.equals(keep)) deleteTree(file);
+                        final File opened = currentImport;
+                        if(opened!=null && opened.getParentFile().equals(library.root)) importer.execute(() -> {
+                            try { JSONObject item=library.read(opened);item.put("lastOpened",System.currentTimeMillis());library.write(opened,item); }
+                            catch(Exception e) { android.util.Log.w("O3DVLibrary","无法更新最近打开时间",e); }
                         });
                     } else if (type.equals("load_progress")) {
                         setLoading(true, "正在解析模型，请稍候…");
@@ -551,7 +755,7 @@ public final class MainActivity extends Activity {
                     } else if (type.equals("no_importable_file") || type.equals("failed_to_load_file") || type.equals("import_failed") || type.equals("javascript_error")) {
                         if (cancellation != null) cancellation.set(true);
                         File failed = activeDirectory;
-                        if (failed != null) cleanupLater(failed);
+                        if (failed != null) cleanupFailed(failed);
                         activeDirectory = null;
                         streaming = false;
                         setLoading(false, "打开失败，可重新选择文件");
@@ -562,6 +766,7 @@ public final class MainActivity extends Activity {
                         web.reload();
                         title.setText("3D 模型查看器 · 安卓测试");
                         showError("无法解析或显示此模型。请检查格式和配套文件，或释放设备资源后重试。");
+                        showLibrary();
                     }
                 } catch (Exception ignored) { }
             });
@@ -580,6 +785,11 @@ public final class MainActivity extends Activity {
             String path = u.getPath();
             if (path == null || path.contains("..") || path.contains("\\")) return denied();
             try {
+                if (path.startsWith("/library/")) {
+                    File file=new File(library.root,path.substring("/library/".length()));
+                    if(!file.getCanonicalPath().startsWith(library.root.getCanonicalPath()+File.separator)||!file.isFile())return denied();
+                    return fileResponse(path,file,request);
+                }
                 if (path.startsWith("/imports/")) {
                     File file = new File(imports, path.substring("/imports/".length()));
                     if (!file.getCanonicalPath().startsWith(imports.getCanonicalPath() + File.separator) || !file.isFile()) {
@@ -695,6 +905,14 @@ public final class MainActivity extends Activity {
         File[] children = file.listFiles();
         if (children != null) for (File child : children) deleteTree(child);
         file.delete();
+    }
+
+    private void cleanupFailed(File directory) {
+        boolean removeStream=directory.equals(rebuildingDirectory);
+        try { importer.execute(() -> {
+            try { if(new File(directory,"model.json").isFile()) {if(removeStream)ModelLibrary.remove(new File(directory,"stream"));} else ModelLibrary.remove(directory); }
+            catch(IOException e) { android.util.Log.w("O3DVLibrary","无法清理未完成的导入",e); }
+        }); } catch(java.util.concurrent.RejectedExecutionException e) { android.util.Log.w("O3DVLibrary","无法安排清理",e); }
     }
 
     private void cleanupLater(File directory) {

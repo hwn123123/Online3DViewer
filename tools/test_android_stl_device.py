@@ -38,7 +38,7 @@ def main():
             cmd('shell', 'rm', '-f', '/data/local/tmp/o3dv-android-test-fixture.stl', check=False)
 
     def start(budget):
-        cmd('shell', 'am', 'start', '-n', PACKAGE + '/.MainActivity', '--es', 'debug-sample', 'fixture', '--ei', 'debug-budget', str(budget))
+        cmd('shell', 'am', 'start', '-n', PACKAGE + '/.MainActivity', '--ez', 'debug-library-test', 'true', '--es', 'debug-sample', 'fixture', '--ei', 'debug-budget', str(budget))
 
     def status():
         result = cmd('shell', 'run-as', PACKAGE, 'cat', 'cache/viewer-debug-status.json', check=False)
@@ -65,7 +65,7 @@ def main():
         assert state.get('peakWorkingBytes', 0) <= budget, (name, state)
         url = urlparse(state['manifestUrl'])
         components = url.path.split('/')
-        assert components[1] == 'imports' and len(components) == 5 and components[3] == 'stream'
+        assert components[1] == 'library' and len(components) == 5 and components[3] == 'stream'
         ident = components[2]
         assert len(ident) == 36 and all(c in '0123456789abcdef-' for c in ident), ident
         target = OUT / name
@@ -73,7 +73,7 @@ def main():
         target.mkdir()
         archive = target / 'stream.tar'
         with archive.open('wb') as output:
-            subprocess.run([*adb, 'exec-out', 'run-as', PACKAGE, 'tar', '-C', 'cache/viewer-imports/' + ident, '-cf', '-', 'stream'], stdout=output, check=True, timeout=60)
+            subprocess.run([*adb, 'exec-out', 'run-as', PACKAGE, 'tar', '-C', 'files/model-library-test/' + ident, '-cf', '-', 'stream'], stdout=output, check=True, timeout=60)
         with tarfile.open(archive) as data:
             for member in data.getmembers():
                 assert member.name == 'stream' or member.name.startswith('stream/'), member.name
