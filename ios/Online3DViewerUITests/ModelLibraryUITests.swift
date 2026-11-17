@@ -15,6 +15,26 @@ final class ModelLibraryUITests: XCTestCase {
         add(attachment)
     }
 
+    func testMobileDistanceMeasurement() {
+        app.launchArguments = ["--sample=utah_teapot.stl", "--test-run=mobile-measurement"]
+        app.launch()
+        let measure = app.webViews.buttons["测量"].firstMatch
+        XCTAssertTrue(measure.waitForExistence(timeout: 45), app.debugDescription)
+        measure.tap()
+        let first = app.webViews.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "选择第一个点")).firstMatch
+        XCTAssertTrue(first.waitForExistence(timeout: 10), app.debugDescription)
+        let web = app.webViews.firstMatch
+        web.coordinate(withNormalizedOffset: CGVector(dx: 0.42, dy: 0.51)).tap()
+        let second = app.webViews.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "第二个点")).firstMatch
+        XCTAssertTrue(second.waitForExistence(timeout: 15), app.debugDescription)
+        web.coordinate(withNormalizedOffset: CGVector(dx: 0.58, dy: 0.51)).tap()
+        let result = app.webViews.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "模型单位未知")).firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 15), app.debugDescription)
+        saveScreenshot("两点测量")
+        app.webViews.buttons["完成"].firstMatch.tap()
+        XCTAssertTrue(measure.waitForExistence(timeout: 10))
+    }
+
     /// The fixture is staged in FormatAudit and never touches the user's library.
     func testLoadingGuardAndCancellation() {
         app.launchArguments = ["--audit-case=55555555-5555-4555-8555-000000000001", "--ui-test-delay-post-read", "--test-run=loading-guard-ui"]
