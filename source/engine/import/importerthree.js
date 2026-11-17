@@ -6,6 +6,7 @@ import { Base64DataURIToArrayBuffer, CreateObjectUrl, GetFileExtensionFromMimeTy
 import { GetFileExtension, GetFileName } from '../io/fileutils.js';
 import { PhongMaterial, TextureMap } from '../model/material.js';
 import { Node } from '../model/node.js';
+import { Unit } from '../model/unit.js';
 import { ConvertThreeColorToColor, ConvertThreeGeometryToMesh, ThreeSRGBToLinearColorConverter } from '../threejs/threeutils.js';
 import { ImporterBase } from './importerbase.js';
 
@@ -285,6 +286,22 @@ export class ImporterThreeBase extends ImporterBase
 
 export class ImporterThreeFbx extends ImporterThreeBase
 {
+    OnThreeObjectsLoaded (loadedObject, onFinish)
+    {
+        // FBX UnitScaleFactor describes centimetres per coordinate unit. Keep
+        // geometry unchanged and expose the unit only when it maps exactly to
+        // a supported length unit; otherwise the user must confirm it.
+        const factor = loadedObject.userData?.unitScaleFactor;
+        if (typeof factor === 'number' && Number.isFinite (factor) && factor > 0) {
+            for (const [scale, unit] of [[0.1, Unit.Millimeter], [1, Unit.Centimeter], [100, Unit.Meter], [2.54, Unit.Inch], [30.48, Unit.Foot]]) {
+                if (Math.abs (factor - scale) <= 1e-7 * scale) {
+                    this.model.SetUnit (unit);
+                    break;
+                }
+            }
+        }
+        super.OnThreeObjectsLoaded (loadedObject, onFinish);
+    }
     constructor ()
     {
         super ();

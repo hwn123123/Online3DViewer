@@ -31,6 +31,10 @@ final class ModelLibraryUITests: XCTestCase {
         let result = app.webViews.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "模型单位未知")).firstMatch
         XCTAssertTrue(result.waitForExistence(timeout: 15), app.debugDescription)
         saveScreenshot("两点测量")
+        app.webViews.buttons["撤销选点"].firstMatch.tap()
+        XCTAssertTrue(second.waitForExistence(timeout: 10), app.debugDescription)
+        web.coordinate(withNormalizedOffset: CGVector(dx: 0.58, dy: 0.51)).tap()
+        XCTAssertTrue(result.waitForExistence(timeout: 15), app.debugDescription)
         app.webViews.buttons["完成"].firstMatch.tap()
         XCTAssertTrue(measure.waitForExistence(timeout: 10))
     }

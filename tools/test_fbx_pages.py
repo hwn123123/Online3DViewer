@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compare bounded FBX mesh pages with whole-scene geometry and materials."""
 from collections import Counter
+import argparse
 import hashlib
 import json
 import os
@@ -49,7 +50,7 @@ def write_fixture(path, version):
     image=(ROOT/'test/testfiles/obj/cube_texture.png').read_bytes()
     objects=[model(100,'Parent',(10,20,30)),model(101,'VisibleA',(1,0,0)),model(102,'HiddenB',(0,3,0),visibility=0),model(103,'MirroredInstance',(0,0,4),(-1,2,1)),mesh(201,'A',0),mesh(202,'B',4),material(301,'Red',(1,.2,.1)),material(302,'Blue',(.1,.2,1)),node('Texture',[('L',401),('S','Texture::Grid'),('S','')],[node('Type',[('S','TextureVideoClip')]),node('FileName',[('S','cube_texture.png')]),node('RelativeFilename',[('S','cube_texture.png')])]),node('Video',[('L',402),('S','Video::Grid'),('S','Clip')],[node('Filename',[('S','cube_texture.png')]),node('Content',[('R',image)])])]
     connections=[('OO',100,0),('OO',101,100),('OO',102,100),('OO',103,100),('OO',201,101),('OO',201,103),('OO',202,102),('OO',301,101),('OO',301,103),('OO',302,102),('OO',402,401),('OP',401,301,'DiffuseColor'),('OP',401,302,'DiffuseColor')]
-    roots=[node('FBXHeaderExtension',children=[node('FBXVersion',[('I',version)])]),node('Objects',children=objects),node('Connections',children=[node('C',[('S',c[0]),('L',c[1]),('L',c[2])]+([('S',c[3])] if len(c)>3 else [])) for c in connections])]
+    roots=[node('FBXHeaderExtension',children=[node('FBXVersion',[('I',version)])]),node('GlobalSettings',children=[node('Properties70',children=[p('UnitScaleFactor','double',[1])])]),node('Objects',children=objects),node('Connections',children=[node('C',[('S',c[0]),('L',c[1]),('L',c[2])]+([('S',c[3])] if len(c)>3 else [])) for c in connections])]
     data=b'Kaydara FBX Binary  \0\x1a\0'+struct.pack('<I',version)
     for root in roots:data+=encode(root,len(data))
     path.write_bytes(data+null)
@@ -86,7 +87,7 @@ def signature(directory):
 
 
 def main():
-    cli=ROOT/'build/ios/mesh-stream'
+    parser=argparse.ArgumentParser();parser.add_argument('--cli',type=Path,default=ROOT/'build/ios/mesh-stream');cli=parser.parse_args().cli
     with tempfile.TemporaryDirectory(prefix='o3dv-fbx-pages-') as temp:
         root=Path(temp); fixtures=[]
         for version in [7400,7700]:
@@ -101,6 +102,8 @@ def main():
                 outputs.append(signature(output));assert not (output/'.fbx-pages').exists()
             whole,paged=outputs
             assert paged[0]['reader']=='ufbx-pages-1',source
+            assert whole[0].get('units')==paged[0].get('units'),(source,'unit mismatch')
+            if i<2:assert paged[0].get('units')=='cm',(source,'unit missing')
             for key in ['triangles','lineSegments','sourceObjectCount']:assert whole[0][key]==paged[0][key],(source,key)
             assert whole[2]==paged[2] and whole[1]==paged[1],(source,'geometry/material/visibility differs',sum((whole[1]-paged[1]).values()),sum((paged[1]-whole[1]).values()))
             assert all(len(v)==1 for v in paged[3].values()),paged[3]

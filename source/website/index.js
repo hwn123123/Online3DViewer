@@ -121,11 +121,19 @@ export function StartWebsite ()
                 window.O3DVBenchmarkNavigation = () => stream.pager.BenchmarkNavigation ();
                 window.O3DVMeasurementDebug = () => ({ active : website.mobileMeasure.active,
                     unit : website.mobileMeasure.unit.value,
+                    readRequests : stream.pager.reader?.readRequests || 0,
                     points : website.mobileMeasure.points.map ((p) => ({ point : p.point.toArray (), snapped : p.snapped })) });
                 window.O3DVProjectMeasurementPoint = (point) => {
                     const projected = new THREE.Vector3 (...point).project (website.viewer.camera);
                     const size = website.viewer.GetCanvasSize ();
                     return [(projected.x + 1) * size.width / 2, (1 - projected.y) * size.height / 2];
+                };
+                window.O3DVMeasurementBounds = () => {
+                    const box = website.viewer.GetBoundingBox (() => true);
+                    return [box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z];
+                };
+                window.O3DVTestEvictGeometry = () => {
+                    for (const key of [...stream.pager.resources.keys ()]) stream.pager.EvictResource (key);
                 };
                 window.O3DVGetViewerPreferences = () => ({
                     background : website.settings.backgroundColor.r,

@@ -40,6 +40,7 @@ export class MobileMeasure
         this.viewer = website.viewer;
         this.active = false;
         this.points = [];
+        this.revision = 0;
         this.root = document.createElement ('div');
         this.root.className = 'o3dv-mobile-measure';
         this.root.hidden = true;
@@ -48,7 +49,8 @@ export class MobileMeasure
             '<option value="">请选择单位</option><option value="mm">毫米 (mm)</option><option value="cm">厘米 (cm)</option>' +
             '<option value="m">米 (m)</option><option value="in">英寸 (in)</option><option value="ft">英尺 (ft)</option></select></label>' +
             '<small>选择文件中坐标使用的单位，不改变模型比例。</small>' +
-            '<span class="o3dv-measure-result" aria-live="polite"></span><div><button type="button" class="o3dv-measure-clear">重新测量</button> ' +
+            '<span class="o3dv-measure-result" aria-live="polite"></span><div><button type="button" class="o3dv-measure-undo">撤销选点</button> ' +
+            '<button type="button" class="o3dv-measure-clear">重新测量</button> ' +
             '<button type="button" class="o3dv-measure-close">完成</button></div></div>';
         document.body.appendChild (this.root);
         this.controls = this.root.querySelector ('.o3dv-measure-controls');
@@ -56,6 +58,7 @@ export class MobileMeasure
         this.result = this.root.querySelector ('.o3dv-measure-result');
         this.root.querySelector ('.o3dv-measure-toggle').onclick = () => this.SetActive (!this.active);
         this.root.querySelector ('.o3dv-measure-clear').onclick = () => this.Clear ();
+        this.root.querySelector ('.o3dv-measure-undo').onclick = () => this.Undo ();
         this.root.querySelector ('.o3dv-measure-close').onclick = () => this.SetActive (false);
         this.unit.onchange = () => this.Update ();
         this.Update ();
@@ -88,18 +91,29 @@ export class MobileMeasure
 
     Clear ()
     {
+        this.revision += 1;
         this.points = [];
         this.viewer.ClearExtra ();
         this.Update ();
     }
 
+    Undo ()
+    {
+        this.revision += 1;
+        this.points.pop ();
+        this.DrawMarkers ();
+        this.Update ();
+    }
+
     Click (coordinates)
     {
+        const revision = ++this.revision;
+        const accept = (hit) => { if (revision === this.revision) this.Accept (hit, coordinates); };
         if (this.website.nativeStream?.active) {
-            this.website.nativeStream.pager.Select (coordinates, (hit) => this.Accept (hit, coordinates));
+            this.website.nativeStream.pager.Select (coordinates, accept);
         } else {
             const hit = this.viewer.GetMeshIntersectionUnderMouse (IntersectionMode.MeshAndLine, coordinates);
-            this.Accept (hit, coordinates);
+            accept (hit);
         }
     }
 
@@ -114,18 +128,26 @@ export class MobileMeasure
         const selected = MeasurementPoint (hit, this.viewer.camera, this.viewer.GetCanvasSize (), coordinates);
         if (this.points.length === 2) this.Clear ();
         this.points.push (selected);
+        this.DrawMarkers ();
+        this.Update ();
+    }
+
+    DrawMarkers ()
+    {
+        this.viewer.ClearExtra ();
         const size = this.viewer.GetCanvasSize ();
         const camera = this.viewer.camera;
-        const distance = camera.position.distanceTo (selected.point);
-        const radius = camera.isPerspectiveCamera ? distance * Math.tan (camera.fov * Math.PI / 360) * 12 / size.height : (camera.top - camera.bottom) * 6 / size.height;
-        const marker = new THREE.Mesh (new THREE.SphereGeometry (Math.max (radius, 1e-8), 12, 8), new THREE.MeshBasicMaterial ({ color : 0xff4b24, depthTest : false }));
-        marker.position.copy (selected.point);
-        this.viewer.AddExtraObject (marker);
+        for (const selected of this.points) {
+            const distance = camera.position.distanceTo (selected.point);
+            const radius = camera.isPerspectiveCamera ? distance * Math.tan (camera.fov * Math.PI / 360) * 12 / size.height : (camera.top - camera.bottom) * 6 / size.height;
+            const marker = new THREE.Mesh (new THREE.SphereGeometry (Math.max (radius, 1e-8), 12, 8), new THREE.MeshBasicMaterial ({ color : 0xff4b24, depthTest : false }));
+            marker.position.copy (selected.point);
+            this.viewer.AddExtraObject (marker);
+        }
         if (this.points.length === 2) {
             const geometry = new THREE.BufferGeometry ().setFromPoints (this.points.map ((p) => p.point));
             this.viewer.AddExtraObject (new THREE.Line (geometry, new THREE.LineBasicMaterial ({ color : 0xff4b24, depthTest : false })));
         }
-        this.Update ();
     }
 
     Update ()
@@ -137,8 +159,9 @@ export class MobileMeasure
             const distance = this.points[0].point.distanceTo (this.points[1].point);
             const unit = this.unit.value;
             const formatted = Number (distance.toPrecision (8)).toString ();
-            this.result.textContent = unit ? '距离：' + formatted + ' ' + unit + '（显示几何近似值）' :
-                '距离：' + formatted + '（模型单位未知，请选择单位）';
+            const points = '点1：' + (this.points[0].snapped ? '顶点' : '表面或线') + '；点2：' + (this.points[1].snapped ? '顶点' : '表面或线');
+            this.result.textContent = unit ? '距离：' + formatted + ' ' + unit + '（显示几何近似值） · ' + points :
+                '距离：' + formatted + '（模型单位未知，请选择单位） · ' + points;
         }
     }
 }

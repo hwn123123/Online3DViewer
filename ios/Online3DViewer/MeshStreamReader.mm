@@ -23,6 +23,13 @@ constexpr size_t MiB = 1024 * 1024;
 NSString *Text(ufbx_string s) {
     return [[NSString alloc] initWithBytes:s.data length:s.length encoding:NSUTF8StringEncoding] ?: @"";
 }
+NSString *FbxUnits(const ufbx_scene *scene, NSString *source) {
+    if (![source.pathExtension.lowercaseString isEqual:@"fbx"] || !ufbx_find_prop(&scene->settings.props, "UnitScaleFactor")) return @"";
+    const double value=scene->settings.unit_meters;
+    for (const auto &unit:std::vector<std::pair<double, NSString *>>{{.001,@"mm"},{.01,@"cm"},{1,@"m"},{.0254,@"in"},{.3048,@"ft"}})
+        if (std::isfinite(value) && std::abs(value-unit.first)<=unit.first*1e-7) return unit.second;
+    return @"";
+}
 uint64_t Resident() {
     mach_task_basic_info_data_t info = {}; mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
     return task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count) == KERN_SUCCESS ? info.resident_size : 0;
@@ -210,6 +217,8 @@ NSString *TextureDigest(NSString *path) {
                 if(!ok)return NO;
                 NSDictionary *part=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:[output stringByAppendingPathComponent:@"manifest.json"]] options:0 error:&operationError];
                 if(!part || ![part[@"complete"] boolValue])throw std::runtime_error("分批解析结果不完整。");
+                if(page==0)manifest[@"units"]=part[@"units"]?:@"";
+                else if(![manifest[@"units"] isEqual:part[@"units"]?:@""])throw std::runtime_error("FBX 分批单位不一致。");
                 NSMutableDictionary *materialMap=[NSMutableDictionary dictionary],*textureNames=[NSMutableDictionary dictionary];
                 for(NSDictionary *material in part[@"materials"]) {
                     NSMutableDictionary *value=[material mutableCopy];[value removeObjectForKey:@"index"];
@@ -332,7 +341,7 @@ NSString *TextureDigest(NSString *path) {
             NSArray *layers=@[@{@"id":@"model",@"index":@0,@"name":@"模型",@"visible":@YES}];
             auto sourceBytes=[[[NSFileManager defaultManager] attributesOfItemAtPath:source error:nil][NSFileSize] unsignedLongLongValue];
             NSMutableDictionary *manifest=[@{@"format":@"o3dv-stream-1",@"reader":@"ufbx-memory-1",@"name":source.lastPathComponent,
-                @"sourceBytes":@(sourceBytes),@"layers":layers,@"materials":materials,@"objects":objects,@"unsupported":unsupported,
+                @"sourceBytes":@(sourceBytes),@"units":FbxUnits(scene.get(),source),@"layers":layers,@"materials":materials,@"objects":objects,@"unsupported":unsupported,
                 @"missingFiles":context.missing,@"complete":@NO} mutableCopy];
             auto lastPublish=Clock::now();
             auto publish=[&](NSString *phase) {
