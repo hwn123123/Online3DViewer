@@ -34,6 +34,8 @@ python3 tools/test_android_rhino_device.py --device 设备序列号
 
 冒烟测试检查内置 STL、GLB、3DM 示例及 Debug 专用 content URI 导入；STL 测试核对二进制与文本 STL 的几何、低预算分段读取及损坏文件处理。3DM 设备测试依赖已准备的 iOS 对照缓存与块实例样本，核对对象、嵌套变换、颜色和二进制几何。合批缓存可用 `tools/verify_android_rhino_batches.py --reference 参考缓存目录 --android 安卓缓存目录` 独立核对对象、样式和抽样几何。结果写入 `build/android-tests/`。它们不能代替外部 App 分享和不同设备上大模型的测试。Debug 文件提供器不包含在 Release 版本中。
 
+`tools/generate_rhino_instances.mm` 可生成包含大量独立对象与嵌套块的 `mixed-batches.3dm`。将它放在 `build/android-tests/mixed-fixtures/`，并用 `build/ios/rhino-stream` 生成 `build/android-tests/mixed-reference/` 对照缓存后，3DM 设备测试会自动检查合批对象、块实例、变换及几何。完成的缓存清单采用流式校验，清单超过 32 MiB 时仍可复用；文件缺失或长度不符会触发重建。
+
 ## 后续移植
 
 - 将 iOS 原生读取器中可共用的 C/C++ 解析和分块输出逐步拆分为平台无关核心，再以 Android NDK / JNI 接入；文件访问、线程取消及内存压力监听由 Android 实现。

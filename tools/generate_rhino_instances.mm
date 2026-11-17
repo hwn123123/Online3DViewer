@@ -37,6 +37,19 @@ int main(int argc,char **argv){if(argc!=2)return 2;ON::Begin();std::string out=a
   addReference(model,uuid(),definitionB,L"Hidden parent layer",ON_Xform::TranslationTransformation(-4,4,0),hiddenChild,false,redRef.ModelComponent()->Index());
   addReference(model,uuid(),empty,L"Empty block",ON_Xform::IdentityTransformation,placements,false);
   save(model,out,"nested-affine.3dm");
+  // A scene with many independent curves plus nested instances, including a
+  // definition member encountered after the batching threshold.
+  for(int i=0;i<1400;i++) {
+   ON_3dPointArray pts;double x=(i%70)*.1,y=(i/70)*.1;
+   pts.Append(ON_3dPoint(x,y,0));pts.Append(ON_3dPoint(x+.05,y+.05,0));
+   addGeometry(model,new ON_PolylineCurve(pts),attributes(uuid(),L"Independent line",placements,false));
+  }
+  ON_UUID lateMember=uuid(),lateDefinition=uuid();
+  ON_3dPointArray latePoints;latePoints.Append(ON_3dPoint(0,0,0));latePoints.Append(ON_3dPoint(0,1,0));
+  addGeometry(model,new ON_PolylineCurve(latePoints),attributes(lateMember,L"Late member",0,true));
+  addDefinition(model,lateDefinition,L"Late definition",{lateMember});
+  addReference(model,uuid(),lateDefinition,L"Late instance",ON_Xform::TranslationTransformation(2,3,0),placements,false);
+  save(model,out,"mixed-batches.3dm");
  }
  for(const auto &kind:std::vector<std::string>{"missing-definition","missing-member","cycle","unsupported-member"}){
   ONX_Model model;model.AddDefaultLayer(L"Layer",ON_Color::Black);ON_UUID def=uuid(),member=uuid();

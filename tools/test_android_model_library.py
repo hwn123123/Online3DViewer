@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Exercise isolated model import, deduplication, cache rebuild and deletion on a device."""
-import argparse,hashlib,json,subprocess,time
+import argparse,hashlib,json,subprocess,time,tempfile
 
 
 def main():
@@ -59,6 +59,20 @@ def main():
     result=status({'model_loaded','native_read_error','javascript_error'});assert result['type']=='model_loaded',result
     assert int(shell('stat','-c','%s',directory+'/stream/'+name))==item['objects'][0]['bytes']
     print('PASS truncated cache is detected and rebuilt',flush=True)
+    # A large but valid manifest should be reused without a full Java JSON tree.
+    large=dict(item);large['testPadding']='x'*(34*1024*1024)
+    with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8') as fixture:
+        json.dump(large,fixture);fixture.flush()
+        remote='/data/local/tmp/o3dv-large-manifest-test.json'
+        try:
+            run('push',fixture.name,remote)
+            shell('cp',remote,cache)
+        finally:run('shell','rm','-f',remote,check=False)
+    original_size=int(shell('stat','-c','%s',cache));assert original_size>32*1024*1024
+    start('--es','debug-library-item',ident)
+    result=status({'model_loaded','native_read_error','javascript_error'});assert result['type']=='model_loaded',result
+    assert int(shell('stat','-c','%s',cache))==original_size
+    print('PASS large valid manifest is reused',flush=True)
     start('--es','debug-library-action','delete','--es','debug-action-item',ident)
     action=status({'library_action_complete'});assert action['action']=='delete'
     assert subprocess.run(adb+['shell','run-as',package,'test','-e',directory]).returncode!=0

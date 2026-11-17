@@ -9,6 +9,9 @@ adb=[args.adb,'-s',args.device];pkg='com.hwn.modelviewer'
 def run(*args,check=True):return subprocess.run(adb+list(map(str,args)),capture_output=True,text=True,check=check,timeout=90).stdout
 # Generate the reference fixtures with tools/test_rhino_instances.py and build/ios/rhino-stream first.
 cases=[('logo',root/'build/ios/WebAssets/assets/models/RhinoLogo.3dm',root/'build/android-tests/rhino-reference/logo/manifest.json'),('nested',root/'build/ios/rhino-geometry-tests/source-fixtures/nested-affine.3dm',root/'build/ios/rhino-geometry-tests/affine/manifest.json'),('curves',root/'build/ios/opennurbs-src/example_files/V6/my_curves.3dm',None),('missing',root/'build/ios/rhino-geometry-tests/source-fixtures/missing-member.3dm',None)]
+mixed=root/'build/android-tests/mixed-fixtures/mixed-batches.3dm';mixed_reference=root/'build/android-tests/mixed-reference/manifest.json'
+if mixed.exists() and mixed_reference.exists():cases.append(('mixed',mixed,mixed_reference))
+else:print('SKIP mixed batching and instances: prepare generated fixture and reference',flush=True)
 for name,source,reference in cases:
  run('shell','am','force-stop',pkg);run('shell','run-as',pkg,'rm','-f','cache/android-test-fixture.3dm','cache/viewer-debug-status.json')
  run('push',source,'/data/local/tmp/o3dv-fixture.3dm');run('shell','run-as',pkg,'cp','/data/local/tmp/o3dv-fixture.3dm','cache/android-test-fixture.3dm')
@@ -31,7 +34,7 @@ for name,source,reference in cases:
   f.extractall(target)
  archive.unlink();manifest=json.loads((target/'stream/manifest.json').read_text())
  assert manifest['complete'] and manifest['reader']=='opennurbs-android-1'
- if reference:
+ if reference and name!='mixed':
   ref=json.loads(reference.read_text())
   for field in ('sourceObjectCount','triangles','vertices','lineSegments'):
    assert manifest[field]==ref[field],(name,field,manifest[field],ref[field])
@@ -46,6 +49,10 @@ for name,source,reference in cases:
    for field in ('url',):
     if a[key].get('available') and b[key].get('available'):
      assert (target/'stream'/a[key][field]).read_bytes()==(reference.parent/b[key][field]).read_bytes(),(name,key,'geometry differs')
+ if name=='mixed':
+  assert any(o.get('parts') for o in manifest['objects']), 'mixed fixture did not exercise batching'
+  assert any(o.get('instanceId') for o in manifest['objects']), 'mixed fixture lost instances'
+  subprocess.run([sys.executable,str(root/'tools/verify_android_rhino_batches.py'),'--reference',str(reference.parent),'--android',str(target/'stream'),'--samples','2000'],check=True)
  if name=='missing': assert manifest['unsupported'],manifest
  (target/'state.json').write_text(json.dumps(state,ensure_ascii=False,indent=2));print('PASS',name,'source',manifest['sourceObjectCount'],'objects',manifest['objectCount'],'triangles',manifest['triangles'],'unsupported',len(manifest['unsupported']),flush=True)
 run('shell','run-as',pkg,'rm','-f','cache/android-test-fixture.3dm');run('shell','rm','-f','/data/local/tmp/o3dv-fixture.3dm')

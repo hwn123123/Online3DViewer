@@ -6,6 +6,8 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.BufferedWriter;
+import java.io.OutputStreamWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -24,10 +26,14 @@ final class RhinoStreamReader {
     }
     private final File source, directory;
     private final Listener listener;
-    private final JSONArray layers = new JSONArray(), materials = new JSONArray(), objects = new JSONArray(), unsupported = new JSONArray();
+    private final JSONArray layers = new JSONArray(), materials = new JSONArray(), unsupported = new JSONArray();
+    private final List<String> objects = new ArrayList<>();
+    private final List<JSONObject> references = new ArrayList<>();
     private final Map<String, JSONObject> definitions = new HashMap<>(), sources = new HashMap<>();
+    private final Set<String> definitionMembers = new HashSet<>();
     private final Map<Integer, JSONObject> materialByIndex = new HashMap<>();
     private long lastPublish, geometryBytes, triangles, vertices, lines;
+    private final double[] bounds={Double.POSITIVE_INFINITY,Double.POSITIVE_INFINITY,Double.POSITIVE_INFINITY,Double.NEGATIVE_INFINITY,Double.NEGATIVE_INFINITY,Double.NEGATIVE_INFINITY};
     private long sourceCount;
     private RhinoBatchAccumulator batch;
     private boolean started;
@@ -67,25 +73,31 @@ final class RhinoStreamReader {
             JSONObject item = sourceMaterials.getJSONObject(i); materials.put(item); materialByIndex.put(item.optInt("index"), item);
         }
         JSONArray defs = header.getJSONArray("definitions");
-        for (int i = 0; i < defs.length(); i++) { JSONObject item = defs.getJSONObject(i); definitions.put(item.getString("id"), item); }
+        for (int i = 0; i < defs.length(); i++) {
+            JSONObject item = defs.getJSONObject(i); definitions.put(item.getString("id"), item);
+            JSONArray members=item.getJSONArray("members");
+            for(int j=0;j<members.length();j++)definitionMembers.add(members.getString(j));
+        }
     }
 
     private void addObject(JSONObject item) throws IOException, JSONException {
         checkpoint();
         sourceCount++;
-        if (!definitions.isEmpty()) sources.put(item.getString("id"), item);
+        boolean definitionMember=definitionMembers.contains(item.getString("id"));
+        if (definitionMember) sources.put(item.getString("id"), item);
         geometryBytes += item.optLong("bytes");
         if (!item.optBoolean("available") && !item.has("instanceDefinitionId")) addUnsupported(item, "不支持此对象或文件没有保存可用的显示网格");
         else if (item.has("partialReason")) addUnsupported(item, item.getString("partialReason"));
-        if (definitions.isEmpty() && sourceCount > 1024) {
+        if (sourceCount > 1024) {
             if(batch==null)batch=new RhinoBatchAccumulator(directory,new RhinoBatchAccumulator.Sink() {
-                @Override public void add(JSONObject value) throws JSONException { value.put("index",objects.length());objects.put(value); }
+                @Override public void add(JSONObject value) throws JSONException { addItem(value); }
                 @Override public void check() throws IOException { checkpoint(); }
             });
-            batch.accept(item);
-        } else objects.put(item);
+            if(definitionMember){batch.flush();addItem(item);}else batch.accept(item);
+        } else addItem(item);
         listener.progress(sourceCount);
-        if (!started || (sourceCount % 8 == 0 && System.nanoTime() - lastPublish > 250_000_000L)) {
+        long publishInterval=Math.min(4_000_000_000L,250_000_000L+sourceCount/1000*250_000_000L);
+        if (!started || (sourceCount % 8 == 0 && System.nanoTime() - lastPublish > publishInterval)) {
             if(batch!=null)batch.flush();
             publish(false);
         }
@@ -94,6 +106,18 @@ final class RhinoStreamReader {
     private void addUnsupported(JSONObject item, String reason) throws JSONException {
         unsupported.put(new JSONObject().put("id", item.optString("id")).put("name", item.optString("name"))
             .put("type", item.optString("type")).put("reason", reason));
+    }
+
+    private void addItem(JSONObject item) throws JSONException {
+        item.put("index",objects.size());
+        if(item.has("instanceDefinitionId")&&!item.optBoolean("definitionMember"))references.add(item);
+        if(item.optBoolean("available")&&!item.optBoolean("definitionMember")) {
+            triangles+=item.optLong("triangles");vertices+=item.optLong("vertices");lines+=item.optLong("lineSegments");
+            JSONArray b=item.getJSONArray("bounds");
+            for(int k=0;k<3;k++){bounds[k]=Math.min(bounds[k],b.getDouble(k));bounds[k+3]=Math.max(bounds[k+3],b.getDouble(k+3));}
+        }
+        // Retain a compact JSON representation instead of thousands of JSONObject trees.
+        objects.add(item.toString());
     }
 
     private static double[] matrix(JSONArray values) throws JSONException {
@@ -126,19 +150,13 @@ final class RhinoStreamReader {
     }
 
     private void resolveInstances() throws JSONException, IOException {
-        List<JSONObject> references = new ArrayList<>();
-        int sourceCount = objects.length();
-        for (int i=0;i<sourceCount;i++) {
-            JSONObject item=objects.getJSONObject(i);
-            if (item.has("instanceDefinitionId") && !item.optBoolean("definitionMember")) references.add(item);
-        }
         for (JSONObject item : references) {
             checkpoint();
             try {
                 List<JSONObject> placements = new ArrayList<>();
                 expand(item, new double[]{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}, null,
                     new ArrayList<>(), new ArrayList<>(), new ArrayList<>(), item.getString("id"), new HashSet<>(), placements, 0);
-                for (JSONObject placement : placements) { placement.put("index", objects.length()); objects.put(placement); }
+                for (JSONObject placement : placements) addItem(placement);
             } catch (JSONException e) { addUnsupported(item, "块实例数据不完整或包含无效变换"); }
         }
     }
@@ -174,7 +192,7 @@ final class RhinoStreamReader {
         if(!item.optBoolean("available"))throw new JSONException("unsupported member");
         List<String> fullPath=new ArrayList<>(path);fullPath.add(item.getString("id"));
         List<String> fullNames=new ArrayList<>(names);if(!item.optString("name").isEmpty())fullNames.add(item.getString("name"));
-        item.put("id",String.join("/",fullPath)).put("index",objects.length())
+        item.put("id",String.join("/",fullPath)).put("index",objects.size())
             .put("name",fullNames.isEmpty()?item.getString("type"):String.join(" / ",fullNames))
             .put("definitionMember",false).put("transform",json(parent)).put("bounds",json(transformBounds(item.getJSONArray("bounds"),parent)))
             .put("visibilityLayers",new JSONArray(nextVisibility)).put("instanceId",root).put("instancePath",new JSONArray(path))
@@ -184,23 +202,22 @@ final class RhinoStreamReader {
 
     private void publish(boolean complete) throws IOException, JSONException {
         checkpoint();
-        double[] bounds={Double.POSITIVE_INFINITY,Double.POSITIVE_INFINITY,Double.POSITIVE_INFINITY,Double.NEGATIVE_INFINITY,Double.NEGATIVE_INFINITY,Double.NEGATIVE_INFINITY};
-        triangles=0;vertices=0;lines=0;
-        for(int i=0;i<objects.length();i++) {
-            JSONObject item=objects.getJSONObject(i);
-            if(!item.optBoolean("available")||item.optBoolean("definitionMember"))continue;
-            triangles+=item.optLong("triangles");vertices+=item.optLong("vertices");lines+=item.optLong("lineSegments");
-            JSONArray b=item.getJSONArray("bounds");for(int k=0;k<3;k++){bounds[k]=Math.min(bounds[k],b.getDouble(k));bounds[k+3]=Math.max(bounds[k+3],b.getDouble(k+3));}
-        }
-        if(!Double.isFinite(bounds[0]))bounds=new double[6];
+        double[] publishedBounds=Double.isFinite(bounds[0])?bounds:new double[6];
         JSONObject manifest=new JSONObject().put("format","o3dv-stream-1").put("reader","opennurbs-android-1")
             .put("name",source.getName()).put("sourceBytes",source.length()).put("layers",layers).put("materials",materials)
-            .put("objects",objects).put("unsupported",unsupported).put("missingFiles",new JSONArray()).put("complete",complete)
+            .put("missingFiles",new JSONArray()).put("complete",complete)
             .put("warnings",new JSONArray().put("Rhino 贴图和部分渲染材质暂未完整显示"))
-            .put("objectCount",objects.length()).put("sourceObjectCount",sourceCount).put("geometryBytes",geometryBytes-(batch==null?0:batch.bytesSaved()))
-            .put("triangles",triangles).put("vertices",vertices).put("lineSegments",lines).put("bounds",json(bounds));
+            .put("objectCount",objects.size()).put("sourceObjectCount",sourceCount).put("geometryBytes",geometryBytes-(batch==null?0:batch.bytesSaved()))
+            .put("triangles",triangles).put("vertices",vertices).put("lineSegments",lines).put("bounds",json(publishedBounds));
         File temp=new File(directory,"manifest.tmp"), dest=new File(directory,"manifest.json");
-        try(FileOutputStream output=new FileOutputStream(temp)){output.write(manifest.toString().getBytes(StandardCharsets.UTF_8));}
+        // Avoid creating several full-size copies of a potentially huge object list on the Java heap.
+        try(BufferedWriter out=new BufferedWriter(new OutputStreamWriter(new FileOutputStream(temp),StandardCharsets.UTF_8))) {
+            String header=manifest.toString();out.write(header,0,header.length()-1);out.write(",\"objects\":[");
+            for(int i=0;i<objects.size();i++){if(i>0)out.write(',');out.write(objects.get(i));}
+            out.write("],\"unsupported\":[");
+            for(int i=0;i<unsupported.length();i++){if(i>0)out.write(',');out.write(unsupported.getJSONObject(i).toString());}
+            out.write("]}");
+        }
         if(!temp.renameTo(dest))throw new IOException("无法写入 3DM 模型清单。");
         lastPublish=System.nanoTime();
         if(!started){started=true;listener.manifestReady(dest);}

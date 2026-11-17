@@ -24,7 +24,8 @@ def main():
         assert ref[key]==actual[key],(key,ref[key],actual[key])
     expected={x['id']:x for x in ref['objects']};seen=set();sampled=0
     stride=max(1,len(expected)//max(1,args.samples))
-    for obj in actual['objects']:
+    for index,obj in enumerate(actual['objects']):
+        assert obj.get('index')==index,(index,obj.get('index'))
         members=obj.get('parts') or [None]
         actual_raw=None;actual_header=None
         for part in members:
@@ -34,9 +35,15 @@ def main():
             for key in ('layerIndex','materialIndex','color','lineColor','opacity','visible','definitionMember'):
                 assert old.get(key)==obj.get(key),(ident,key,old.get(key),obj.get(key))
             if part is None:
-                for key in ('triangles','vertices','lineSegments','bounds','origin'):
+                for key in ('triangles','vertices','lineSegments'):
                     assert old.get(key)==obj.get(key),(ident,key)
+                for key in ('bounds','origin','transform'):
+                    if key in ('bounds','origin') and not old.get('available'):continue
+                    before,after=old.get(key),obj.get(key)
+                    assert before is None and after is None or (isinstance(before,list) and isinstance(after,list)
+                        and len(before)==len(after) and all(math.isclose(x,y,rel_tol=0,abs_tol=1e-6) for x,y in zip(before,after))),(ident,key,before,after)
             else:
+                assert part.get('name')==old.get('name') and part.get('type')==old.get('type'),(ident,'name or type')
                 assert part['end']-part['start']==old['triangles']*3,(ident,'faces')
                 assert part['lineEnd']-part['lineStart']==old['lineSegments']*2,(ident,'lines')
             if len(seen)%stride or not old.get('available'):continue

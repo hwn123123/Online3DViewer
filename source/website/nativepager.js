@@ -220,7 +220,9 @@ export class NativePager
 
     PlacementLimit ()
     {
-        return Math.max (8, Math.min (4096, Math.floor (this.policy.geometryBytes / 16384)));
+        // A placement still consumes a share of the device-dependent budget.
+        // Higher-memory devices can retain more small objects between gestures.
+        return Math.max (8, Math.min (16384, Math.floor (this.policy.geometryBytes / 16384)));
     }
 
     ReleasePins ()

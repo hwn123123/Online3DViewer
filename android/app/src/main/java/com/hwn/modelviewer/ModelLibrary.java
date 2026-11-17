@@ -1,6 +1,8 @@
 package com.hwn.modelviewer;
 
 import android.util.AtomicFile;
+import android.util.JsonReader;
+import android.util.JsonToken;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -15,6 +17,8 @@ import java.util.List;
 import java.util.Collections;
 import java.util.Locale;
 import java.io.ByteArrayOutputStream;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 
 /** App-owned source copies live separately from discardable display data. */
 final class ModelLibrary {
@@ -112,20 +116,36 @@ final class ModelLibrary {
     boolean validCache(File dir,String ext) {
         try {
             File cache=new File(dir,"stream"),manifest=new File(cache,"manifest.json");
-            if(manifest.length()==0||manifest.length()>32*1024*1024)return false;
-            byte[] data;
-            try(FileInputStream in=new FileInputStream(manifest);java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream()) {
-                byte[] buffer=new byte[65536];int n;while((n=in.read(buffer))!=-1)out.write(buffer,0,n);data=out.toByteArray();
-            }
-            JSONObject m=new JSONObject(new String(data,StandardCharsets.UTF_8));
             String expected=ext.equals("stl")?"stl-stream-1":ext.equals("3dm")?"opennurbs-android-1":"";
-            if(!m.optBoolean("complete")||!expected.equals(m.optString("reader")))return false;
-            JSONArray objects=m.getJSONArray("objects");
-            for(int i=0;i<objects.length();i++) {
-                JSONObject o=objects.getJSONObject(i);String name=o.getString("url");
-                if(!new File(name).getName().equals(name)||!new File(cache,name).isFile()||new File(cache,name).length()!=o.getLong("bytes"))return false;
+            if(manifest.length()==0 || expected.isEmpty())return false;
+            boolean complete=false,foundObjects=false;String reader="";
+            // Completed manifests can be larger than the Java heap. Validate them incrementally.
+            try(JsonReader json=new JsonReader(new BufferedReader(new InputStreamReader(new FileInputStream(manifest),StandardCharsets.UTF_8)))) {
+                json.beginObject();
+                while(json.hasNext()) {
+                    String key=json.nextName();
+                    if(key.equals("complete"))complete=json.nextBoolean();
+                    else if(key.equals("reader"))reader=json.nextString();
+                    else if(key.equals("objects")) {
+                        foundObjects=true;json.beginArray();
+                        while(json.hasNext()) {
+                            String name=null;long bytes=-1;json.beginObject();
+                            while(json.hasNext()) {
+                                String field=json.nextName();
+                                if(field.equals("url"))name=json.nextString();
+                                else if(field.equals("bytes"))bytes=json.nextLong();
+                                else json.skipValue();
+                            }
+                            json.endObject();
+                            if(name==null||name.isEmpty()||!new File(name).getName().equals(name)||bytes<0)return false;
+                            File part=new File(cache,name);if(!part.isFile()||part.length()!=bytes)return false;
+                        }
+                        json.endArray();
+                    } else json.skipValue();
+                }
+                json.endObject();
+                return json.peek()==JsonToken.END_DOCUMENT && foundObjects && complete && expected.equals(reader);
             }
-            return true;
         } catch(Exception e){return false;}
     }
     static long size(File file) {
