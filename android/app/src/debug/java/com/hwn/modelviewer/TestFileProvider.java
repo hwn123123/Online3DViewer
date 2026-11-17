@@ -15,16 +15,27 @@ import java.io.FileNotFoundException;
 public final class TestFileProvider extends ContentProvider {
     @Override public boolean onCreate() { return true; }
     @Override public String getType(Uri uri) { return "application/octet-stream"; }
+    private String fixtureName(Uri uri) {
+        switch (uri.getPath()) {
+            case "/fixture3dm": return "android-test-fixture.3dm";
+            case "/fixture": return "android-test-fixture.stl";
+            case "/fixtureobj": return "android-test-fixture.obj";
+            case "/fixturefbx": return "android-test-fixture.fbx";
+            case "/teapot": return "android-test-teapot.stl";
+            default: return null;
+        }
+    }
     @Override public Cursor query(Uri uri, String[] projection, String selection, String[] args, String sort) {
         MatrixCursor result = new MatrixCursor(new String[]{OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE});
-        String name = "/fixture3dm".equals(uri.getPath()) ? "android-test-fixture.3dm" : "/fixture".equals(uri.getPath()) ? "android-test-fixture.stl" : "android-test-teapot.stl";
+        String name = fixtureName(uri);
+        if (name == null) return result;
         File file = new File(getContext().getCacheDir(), name);
         result.addRow(new Object[]{name, file.length()});
         return result;
     }
     @Override public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
-        if ((!"/teapot".equals(uri.getPath()) && !"/fixture".equals(uri.getPath()) && !"/fixture3dm".equals(uri.getPath())) || !"r".equals(mode)) throw new FileNotFoundException();
-        String name = "/fixture3dm".equals(uri.getPath()) ? "android-test-fixture.3dm" : "/fixture".equals(uri.getPath()) ? "android-test-fixture.stl" : "android-test-teapot.stl";
+        String name = fixtureName(uri);
+        if (name == null || !"r".equals(mode)) throw new FileNotFoundException();
         return ParcelFileDescriptor.open(new File(getContext().getCacheDir(), name), ParcelFileDescriptor.MODE_READ_ONLY);
     }
     @Override public Uri insert(Uri uri, ContentValues values) { throw new UnsupportedOperationException(); }

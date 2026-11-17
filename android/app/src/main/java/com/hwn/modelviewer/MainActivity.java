@@ -80,6 +80,7 @@ public final class MainActivity extends Activity {
     private boolean waitingStream;
     private boolean streaming;
     private volatile boolean severeMemoryPressure;
+    private volatile JSONObject debugMemoryFailure;
     private AtomicBoolean cancellation;
     private File activeDirectory;
     private File imports;
@@ -230,6 +231,8 @@ public final class MainActivity extends Activity {
                 importFiles(Arrays.asList(Uri.parse("content://com.hwn.modelviewer.test/fixture")));
             } else if ("fixture3dm".equals(sample)) {
                 importFiles(Arrays.asList(Uri.parse("content://com.hwn.modelviewer.test/fixture3dm")));
+            } else if ("fixtureobj".equals(sample) || "fixturefbx".equals(sample)) {
+                importFiles(Arrays.asList(Uri.parse("content://com.hwn.modelviewer.test/" + sample)));
             } else if ("import".equals(sample)) {
                 try (InputStream input = getAssets().open("assets/models/utah_teapot.stl");
                      FileOutputStream output = new FileOutputStream(new File(getCacheDir(), "android-test-teapot.stl"))) {
@@ -315,6 +318,7 @@ public final class MainActivity extends Activity {
 
     private void openLibraryItem(String id) {
         if(loading || libraryBusy)return;
+        debugMemoryFailure=null;
         try {
             File directory=library.directory(id);JSONObject item=library.read(directory);List<String> names=jsonNames(item);
             showViewer();setLoading(true,"正在打开模型…");title.setText(item.optString("name"));
@@ -393,6 +397,7 @@ public final class MainActivity extends Activity {
     private void importFiles(List<Uri> files) {
         if (files.isEmpty()) return;
         if (loading) { showError("当前模型正在处理，请等待完成后再打开其他文件。"); return; }
+        debugMemoryFailure=null;
         List<String> names = new ArrayList<>();
         int modelCount = 0;
         int primaryIndex = -1;
@@ -496,7 +501,7 @@ public final class MainActivity extends Activity {
                 if (cancelled.get()) { cleanupFailed(workDirectory[0]); return; }
                 runOnUiThread(() -> {
                     if (cancelled.get() || isFinishing() || isDestroyed()) { cleanupFailed(workDirectory[0]); return; }
-                    try { debugStatus(new JSONObject().put("type", "native_read_error").put("message", e.getMessage())); }
+                    try { debugStatus(new JSONObject().put("type", "native_read_error").put("message", e.getMessage()).put("memory", debugMemoryFailure)); }
                     catch (org.json.JSONException ignored) { }
                     if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) android.util.Log.w("O3DVReader", "读取失败", e);
                     setLoading(false, "导入失败，可重新选择文件");
@@ -668,13 +673,18 @@ public final class MainActivity extends Activity {
 
     private void checkResources(AtomicBoolean cancelled, File directory, long required) throws IOException {
         if (cancelled.get() || Thread.currentThread().isInterrupted()) throw new IOException("读取已取消。");
-        if (severeMemoryPressure) throw new IOException("设备可用内存不足，已停止读取。");
         ActivityManager.MemoryInfo info = new ActivityManager.MemoryInfo();
         ((ActivityManager)getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(info);
         Runtime runtime = Runtime.getRuntime();
         long javaAvailable = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
-        if (info.lowMemory || javaAvailable < 8L * 1024 * 1024 || android.os.Debug.getNativeHeapAllocatedSize() > 512L * 1024 * 1024)
+        long nativeAllocated = android.os.Debug.getNativeHeapAllocatedSize();
+        if (severeMemoryPressure || info.lowMemory || javaAvailable < 8L * 1024 * 1024 || nativeAllocated > 512L * 1024 * 1024) {
+            if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) try {
+                debugMemoryFailure = new JSONObject().put("severePressure", severeMemoryPressure).put("systemLowMemory", info.lowMemory)
+                    .put("systemAvailableBytes", info.availMem).put("javaAvailableBytes", javaAvailable).put("nativeAllocatedBytes", nativeAllocated);
+            } catch (org.json.JSONException ignored) { }
             throw new IOException("设备可用内存不足，已停止读取。");
+        }
         long free = directory.getUsableSpace();
         if (free < StlStreamReader.STORAGE_RESERVE || required > free - StlStreamReader.STORAGE_RESERVE)
             throw new IOException("设备存储空间不足，请清理空间后重试。");
