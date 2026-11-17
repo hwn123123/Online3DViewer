@@ -121,6 +121,7 @@ export function StartWebsite ()
                 window.O3DVBenchmarkNavigation = () => stream.pager.BenchmarkNavigation ();
                 window.O3DVMeasurementDebug = () => ({ active : website.mobileMeasure.active,
                     unit : website.mobileMeasure.unit.value,
+                    candidate : website.mobileMeasure.candidate ? { point : website.mobileMeasure.candidate.point.toArray (), snapped : website.mobileMeasure.candidate.snapped } : null,
                     readRequests : stream.pager.reader?.readRequests || 0,
                     points : website.mobileMeasure.points.map ((p) => ({ point : p.point.toArray (), snapped : p.snapped })) });
                 window.O3DVProjectMeasurementPoint = (point) => {

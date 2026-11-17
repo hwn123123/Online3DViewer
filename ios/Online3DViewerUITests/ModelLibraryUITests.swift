@@ -25,15 +25,23 @@ final class ModelLibraryUITests: XCTestCase {
         XCTAssertTrue(first.waitForExistence(timeout: 10), app.debugDescription)
         let web = app.webViews.firstMatch
         web.coordinate(withNormalizedOffset: CGVector(dx: 0.42, dy: 0.51)).tap()
+        let confirm = app.webViews.buttons["确认此点"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 15), app.debugDescription)
+        saveScreenshot("选点放大预览")
+        confirm.tap()
         let second = app.webViews.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "第二个点")).firstMatch
         XCTAssertTrue(second.waitForExistence(timeout: 15), app.debugDescription)
         web.coordinate(withNormalizedOffset: CGVector(dx: 0.58, dy: 0.51)).tap()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 15), app.debugDescription)
+        confirm.tap()
         let result = app.webViews.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "模型单位未知")).firstMatch
         XCTAssertTrue(result.waitForExistence(timeout: 15), app.debugDescription)
         saveScreenshot("两点测量")
         app.webViews.buttons["撤销选点"].firstMatch.tap()
         XCTAssertTrue(second.waitForExistence(timeout: 10), app.debugDescription)
         web.coordinate(withNormalizedOffset: CGVector(dx: 0.58, dy: 0.51)).tap()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 15), app.debugDescription)
+        confirm.tap()
         XCTAssertTrue(result.waitForExistence(timeout: 15), app.debugDescription)
         app.webViews.buttons["完成"].firstMatch.tap()
         XCTAssertTrue(measure.waitForExistence(timeout: 10))

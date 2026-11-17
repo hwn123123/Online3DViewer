@@ -585,6 +585,7 @@ export class NativePager
         }
         this.target = null;
         this.completeTarget = null;
+        this.completeCamera = null;
         this.spareTarget = null;
     }
 
@@ -873,6 +874,7 @@ export class NativePager
                     if (this.frame.complete) {
                         this.spareTarget = this.completeTarget !== this.target ? this.completeTarget : this.spareTarget;
                         this.completeTarget = this.target;
+                        this.completeCamera = this.viewer.GetCamera ().Clone ();
                         this.Present (this.completeTarget);
                     }
                     this.Report (this.frame.complete);
@@ -1075,6 +1077,7 @@ export class NativePager
             if (this.active && serial === this.serial) {
                 this.frame.complete = true;
                 this.completeTarget = this.target;
+                this.completeCamera = this.viewer.GetCamera ().Clone ();
                 this.Present (this.completeTarget);
                 this.Report (true);
             }

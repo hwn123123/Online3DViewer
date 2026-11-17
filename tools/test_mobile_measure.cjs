@@ -47,9 +47,18 @@ fs.writeFileSync(folder+'/evicted.json',JSON.stringify(low));
  await page.addInitScript(()=>{window.O3DVNativeDebug=true;window.events=[];window.webkit={messageHandlers:{o3dv:{postMessage:m=>window.events.push(m)}}};});
  await page.goto('http://127.0.0.1:8097/');await page.waitForFunction(()=>window.O3DVOpenStream);
  async function open(file){await page.evaluate(file=>{window.events=[];window.O3DVOpenStream(location.origin+'/models/measure-test/'+file);},file);await page.waitForFunction(()=>window.events.some(e=>e.type==='model_loaded'||e.type==='javascript_error'),null,{timeout:40000});const err=await page.evaluate(()=>window.events.find(e=>e.type==='javascript_error'));if(err)throw Error(JSON.stringify(err));await page.locator('.o3dv-measure-toggle').click();}
- async function clickVertex(point,center,count){const [v,c]=await page.evaluate(([a,b])=>[window.O3DVProjectMeasurementPoint(a),window.O3DVProjectMeasurementPoint(b)],[point,center]);const canvas=await page.locator('#viewer').boundingBox();const dx=c[0]-v[0],dy=c[1]-v[1],d=Math.hypot(dx,dy);await page.mouse.click(canvas.x+v[0]+dx/d*5,canvas.y+v[1]+dy/d*5);try { await page.waitForFunction(n=>window.O3DVMeasurementDebug().points.length===n,count,{timeout:5000}); } catch (e) { console.log('pick failure', point, v, c, canvas, await page.evaluate(([x,y])=>{const e=document.elementFromPoint(x,y);return e?.outerHTML?.slice(0,250)},[canvas.x+v[0]+dx/d*5,canvas.y+v[1]+dy/d*5]), await page.locator('.o3dv-measure-result').textContent(), await page.evaluate(()=>window.O3DVMeasurementDebug())); throw e; }}
+ async function clickVertex(point,center,count,edge=true){const [v,c]=await page.evaluate(([a,b])=>[window.O3DVProjectMeasurementPoint(a),window.O3DVProjectMeasurementPoint(b)],[point,center]);const canvas=await page.locator('#viewer').boundingBox();const dx=c[0]-v[0],dy=c[1]-v[1],d=Math.hypot(dx,dy);await page.mouse.click(canvas.x+v[0]+dx/d*5,canvas.y+v[1]+dy/d*5);await page.waitForFunction(()=>window.O3DVMeasurementDebug().candidate!==null,null,{timeout:10000});if((await state()).points.length!==count-1)throw Error('Preview changed committed points');if(!(await page.locator('.o3dv-measure-preview canvas').isVisible()))throw Error('Missing magnified preview');const preview=await page.locator('.o3dv-measure-preview canvas').evaluate(c=>{const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let light=0,dark=0;for(let i=0;i<d.length;i+=4){if(d[i]>245&&d[i+1]>245&&d[i+2]>245)light++;if(d[i]<240&&d[i+1]<240&&d[i+2]<240)dark++;}return {light,dark};});if(preview.dark<10||(edge&&preview.light<10)){const data=await page.locator('.o3dv-measure-preview canvas').evaluate(c=>c.toDataURL());fs.writeFileSync('build/android-tests/loupe-failed.png',Buffer.from(data.split(',')[1],'base64'));throw Error('Magnifier missing model/background: '+JSON.stringify(preview));}await page.locator('.o3dv-measure-confirm').click();await page.waitForFunction(n=>window.O3DVMeasurementDebug().points.length===n,count,{timeout:5000});}
  async function state(){return page.evaluate(()=>window.O3DVMeasurementDebug());}
- await open('manifest.json');await clickVertex([0,0,0],[50,50,0],1);await clickVertex([100,0,0],[50,50,0],2);
+ await open('manifest.json');
+ let initialBox=await page.locator('#viewer').boundingBox();await page.mouse.click(initialBox.x+initialBox.width*.5,initialBox.y+initialBox.height*.5);
+ await page.waitForFunction(()=>window.O3DVMeasurementDebug().candidate!==null,null,{timeout:10000});
+ if((await state()).points.length)throw Error('Unconfirmed candidate was saved');
+ await page.mouse.move(initialBox.x+initialBox.width*.4,initialBox.y+initialBox.height*.4);await page.mouse.down();await page.mouse.move(initialBox.x+initialBox.width*.5,initialBox.y+initialBox.height*.45,{steps:3});await page.mouse.up();
+ await page.waitForFunction(()=>window.O3DVMeasurementDebug().candidate===null,null,{timeout:10000});
+ if(await page.locator('.o3dv-measure-confirm').isVisible())throw Error('Moving the view retained a stale candidate');
+ await page.locator('.o3dv-measure-close').click();await open('manifest.json');
+ console.log('PASS view movement cancels an unconfirmed point');
+ await clickVertex([0,0,0],[50,50,0],1);await clickVertex([100,0,0],[50,50,0],2);
  let s=await state();let dist=Math.hypot(...s.points[0].point.map((x,i)=>x-s.points[1].point[i]));if(!s.points.every(p=>p.snapped)||Math.abs(dist-100)>1e-5)throw Error('Incorrect vertex distance '+JSON.stringify(s));
  if(!(await page.locator('.o3dv-measure-result').textContent()).includes('单位未知'))throw Error('Unknown units were silently assigned');
  await page.locator('.o3dv-measure-controls select').selectOption('mm');if(!(await page.locator('.o3dv-measure-result').textContent()).includes('100 mm'))throw Error('Unit label wrong');
@@ -71,7 +80,7 @@ fs.writeFileSync(folder+'/evicted.json',JSON.stringify(low));
  await page.route('**/large-*.bin',async route=>{await new Promise(resolve=>setTimeout(resolve,500));try{await route.continue();}catch{/* navigation may cancel the delayed request */}});
  await page.mouse.click(box.x+box.width*.5,box.y+box.height*.5);
  await page.locator('.o3dv-measure-clear').click();await page.waitForTimeout(1500);
- if((await state()).points.length)throw Error('Cancelled asynchronous pick reappeared');
+ if((await state()).points.length || (await state()).candidate)throw Error('Cancelled asynchronous pick reappeared');
  await page.unroute('**/large-*.bin');console.log('PASS clear rejects stale asynchronous picks');
  await page.locator('.o3dv-measure-close').click();
  if(fs.existsSync('build/ios/memory-stream-tests/fixtures/measure-rhino/manifest.json')) {
@@ -83,10 +92,23 @@ fs.writeFileSync(folder+'/evicted.json',JSON.stringify(low));
   console.log('PASS Android native 3DM 100 mm edge and units');
   await page.locator('.o3dv-measure-close').click();
  } else console.log('SKIP Android 3DM: native cache fixture not generated');
+ if(fs.existsSync('build/ios/memory-stream-tests/fixtures/measure-work/expected.json')) {
+  const expected=JSON.parse(fs.readFileSync('build/ios/memory-stream-tests/fixtures/measure-work/expected.json','utf8'));
+  await page.evaluate(()=>{window.events=[];window.O3DVOpenStream(location.origin+'/models/measure-work/manifest.json');});
+  await page.waitForFunction(()=>window.events.some(e=>e.type==='model_loaded'||e.type==='javascript_error'),null,{timeout:40000});
+  const failure=await page.evaluate(()=>window.events.find(e=>e.type==='javascript_error'));if(failure)throw Error(JSON.stringify(failure));
+  await page.locator('.o3dv-measure-toggle').click();
+  const center=expected.points[0].map((v,i)=>(v+expected.points[1][i])/2);
+  await clickVertex(expected.points[0],center,1,false);await clickVertex(expected.points[1],center,2,false);
+  s=await state();dist=Math.hypot(...s.points[0].point.map((x,i)=>x-s.points[1].point[i]));
+  if(s.unit!=='mm'||!s.points.every((p,i)=>p.snapped&&Math.hypot(...p.point.map((v,j)=>v-expected.points[i][j]))<expected.tolerance)||Math.abs(dist-expected.distance)>expected.tolerance)throw Error('Work 3DM source coordinate mismatch '+JSON.stringify(s));
+  console.log('PASS real work 3DM line endpoints and distance against source');
+  await page.locator('.o3dv-measure-close').click();
+ } else console.log('SKIP real work 3DM: local fixture not generated');
  await page.evaluate(()=>{window.events=[];window.O3DVOpenFiles([location.origin+'/measure-quad.stl']);});
  await page.waitForFunction(()=>window.events.some(e=>e.type==='model_loaded'||e.type==='javascript_error'),null,{timeout:40000});
  const normalError=await page.evaluate(()=>window.events.find(e=>e.type==='javascript_error'));if(normalError)throw Error(JSON.stringify(normalError));
- await page.locator('.o3dv-measure-toggle').click();await clickVertex([20,0,-20],[50,0,-50],1);await clickVertex([80,0,-20],[50,0,-50],2);
+ await page.locator('.o3dv-measure-toggle').click();await clickVertex([20,0,-20],[50,0,-50],1,false);await clickVertex([80,0,-20],[50,0,-50],2,false);
  s=await state();dist=Math.hypot(...s.points[0].point.map((x,i)=>x-s.points[1].point[i]));
  if(!s.points.every(p=>!p.snapped)||dist<50||dist>70||s.unit)throw Error('Wrong ordinary STL measurement '+JSON.stringify(s));
  console.log('PASS ordinary imported STL measurement and unknown units');
