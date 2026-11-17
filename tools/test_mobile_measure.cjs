@@ -39,7 +39,7 @@ const count=8000,large=Buffer.alloc(32+count*24+24);
 for(let i=0;i<count;i++){const p=vertices[i%4];p.forEach((v,k)=>large.writeFloatLE(v,32+i*12+k*4));large.writeFloatLE(1,32+count*12+i*12+8);}
 indices.forEach((n,i)=>large.writeUInt32LE(n,32+count*24+i*4));
 const low=structuredClone(manifest);low.name='Evicted geometry';low.objects=[];low.bounds=[0,0,0,100,100,2];low.objectCount=3;low.sourceObjectCount=3;low.triangles=6;low.vertices=count*3;low.geometryBytes=large.length*3;
-for(let i=0;i<3;i++){fs.writeFileSync(folder+'/large-'+i+'.bin',large);low.objects.push({...object,id:'large-'+i,index:i,url:'large-'+i+'.bin',bytes:large.length,vertices:count,origin:[0,0,i],bounds:[0,0,i,100,100,i]});}
+for(let i=0;i<3;i++){fs.writeFileSync(folder+'/large-'+i+'.bin',large);low.objects.push({...object,id:'large-'+i,index:i,url:'large-'+i+'.bin',bytes:large.length,vertices:count,origin:[0,0,i],bounds:[0,0,0,100,100,2]});}
 fs.writeFileSync(folder+'/evicted.json',JSON.stringify(low));
 (async()=>{
  const browser=await chromium.launch({...(process.env.O3DV_BROWSER_EXECUTABLE?{executablePath:process.env.O3DV_BROWSER_EXECUTABLE}:{}),headless:true,args:['--use-angle=swiftshader','--enable-webgl','--ignore-gpu-blocklist']});
@@ -63,8 +63,9 @@ fs.writeFileSync(folder+'/evicted.json',JSON.stringify(low));
  await page.locator('.o3dv-measure-close').click();if((await state()).active||(await state()).points.length)throw Error('Close failed');
  await page.evaluate(()=>window.O3DVSetMemoryPolicy({geometryBytes:262144,textureBytes:1048576,framePixels:1000000}));
  await open('evicted.json');await page.evaluate(()=>window.O3DVTestEvictGeometry());let reads=(await state()).readRequests;const box=await page.locator('#viewer').boundingBox();
- await page.mouse.click(box.x+box.width*.5,box.y+box.height*.5);await page.waitForFunction(()=>window.O3DVMeasurementDebug().points.length===1,null,{timeout:30000});
+ await clickVertex([0,0,2],[50,50,2],1);
  s=await state();if(s.readRequests<=reads)throw Error('Evicted picking did not read geometry again: '+JSON.stringify(s));
+ if(!s.points[0].snapped||Math.abs(s.points[0].point[2]-2)>1e-6)throw Error('Evicted placement lost world transform: '+JSON.stringify(s));
  console.log('PASS measurement reads an evicted block under a 256 KiB budget');
  await page.locator('.o3dv-measure-clear').click();await page.evaluate(()=>window.O3DVTestEvictGeometry());
  await page.route('**/large-*.bin',async route=>{await new Promise(resolve=>setTimeout(resolve,500));try{await route.continue();}catch{/* navigation may cancel the delayed request */}});

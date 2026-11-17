@@ -108,24 +108,28 @@ export class MobileMeasure
     Click (coordinates)
     {
         const revision = ++this.revision;
-        const accept = (hit) => { if (revision === this.revision) this.Accept (hit, coordinates); };
+        const accept = (selected, failed = false) => {
+            if (revision !== this.revision || !this.active) return;
+            if (failed) this.result.textContent = '选点读取失败，请重试或释放设备资源。';
+            else this.Accept (selected);
+        };
         if (this.website.nativeStream?.active) {
+            this.result.textContent = '正在查找选点，请稍候…';
             this.website.nativeStream.pager.Select (coordinates, accept);
         } else {
             const hit = this.viewer.GetMeshIntersectionUnderMouse (IntersectionMode.MeshAndLine, coordinates);
-            accept (hit);
+            if (hit) hit.object.updateWorldMatrix (true, false);
+            accept (hit ? MeasurementPoint (hit, this.viewer.camera, this.viewer.GetCanvasSize (), coordinates) : null);
         }
     }
 
-    Accept (hit, coordinates)
+    Accept (selected)
     {
         if (!this.active) return;
-        if (!hit) {
+        if (!selected) {
             this.result.textContent = '没有选中模型，请放大后重试。';
             return;
         }
-        hit.object.updateWorldMatrix (true, false);
-        const selected = MeasurementPoint (hit, this.viewer.camera, this.viewer.GetCanvasSize (), coordinates);
         if (this.points.length === 2) this.Clear ();
         this.points.push (selected);
         this.DrawMarkers ();

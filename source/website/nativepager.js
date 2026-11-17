@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { NativeGeometryReader } from './nativegeometryreader.js';
 import { GetLineSegmentsProjectedDistance } from '../engine/threejs/threeutils.js';
 import { CameraIsEqual3D } from '../engine/viewer/camera.js';
+import { MeasurementPoint } from './mobilemeasure.js';
 
 const Pause = () => new Promise ((resolve) => setTimeout (resolve, 0));
 const IsBlend = (data) => data.alphaMode ? data.alphaMode === 'BLEND' : data.opacity < 1;
@@ -953,6 +954,7 @@ export class NativePager
                 }
                 candidates.sort ((a, b) => a.distance - b.distance);
                 let nearest = null;
+                let sliceStart = performance.now ();
                 await this.Fence ();
                 for (const candidate of candidates) {
                     if (nearest && candidate.distance > nearest.distance) {
@@ -979,14 +981,24 @@ export class NativePager
                         const hit = raycaster.intersectObject (item.object, true).find ((candidate) => !candidate.object.isLineSegments ||
                             GetLineSegmentsProjectedDistance (camera, size.width, size.height, candidate.object, coordinates) <= 10);
                         if (hit && (!nearest || hit.distance < nearest.distance)) {
-                            nearest = { distance : hit.distance, hit, data : hit.object.userData.nativeObject,
+                            // Resolve the world-space point while its placement is
+                            // still attached: another candidate can evict it.
+                            const measured = measureCallback ? MeasurementPoint (hit, camera, size, coordinates) : null;
+                            nearest = { distance : hit.distance, measured, data : hit.object.userData.nativeObject,
                                 index : hit.object.isMesh ? hit.faceIndex * 3 : hit.index, mesh : hit.object.isMesh || !!hit.object.userData.nativeObject.drawMode };
                         }
-                        await Pause ();
+                        // Yield periodically instead of delaying every geometry block.
+                        // This preserves cancellation and responsive input without
+                        // adding a timer delay for thousands of small objects.
+                        if (performance.now () - sliceStart >= 12) {
+                            await Pause ();
+                            sliceStart = performance.now ();
+                            if (signal.aborted || !this.active || serial !== this.serial) return;
+                        }
                     }
                 }
                 if (measureCallback && this.active && serial === this.serial) {
-                    measureCallback (nearest?.hit || null);
+                    measureCallback (nearest?.measured || null);
                 } else if (nearest && this.active && serial === this.serial) {
                     const data = nearest.data;
                     const index = nearest.index + (nearest.mesh ? data.indexBase || 0 : data.lineBase || 0);
@@ -996,6 +1008,7 @@ export class NativePager
                 }
             } catch (error) {
                 if (error.name !== 'AbortError' && this.active && serial === this.serial) {
+                    if (measureCallback) measureCallback (null, true);
                     this.stream.Notify ({ type : 'stream_selection_error', name : String (error) });
                 }
             }
