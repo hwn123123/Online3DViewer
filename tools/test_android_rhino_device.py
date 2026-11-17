@@ -34,6 +34,7 @@ for name,source,reference in cases:
   f.extractall(target)
  archive.unlink();manifest=json.loads((target/'stream/manifest.json').read_text())
  assert manifest['complete'] and manifest['reader']=='opennurbs-android-1'
+ if name in ('nested','mixed'):assert manifest.get('units')=='mm',(name,'model units',manifest.get('units'))
  if reference and name!='mixed':
   ref=json.loads(reference.read_text())
   for field in ('sourceObjectCount','triangles','vertices','lineSegments'):

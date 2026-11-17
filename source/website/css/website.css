@@ -432,3 +432,10 @@ body.o3dv-native-app [data-icon="dark_mode"],
 body.o3dv-native-app [data-icon="light_mode"] {
     display: none !important;
 }
+
+.o3dv-mobile-measure { position: fixed; right: 12px; bottom: 14px; z-index: 100; color: #202630; font: 14px sans-serif; }
+.o3dv-mobile-measure[hidden], .o3dv-mobile-measure [hidden] { display: none !important; }
+.o3dv-mobile-measure button, .o3dv-mobile-measure select { font: 14px sans-serif; padding: 8px 10px; border: 1px solid #adb5bd; border-radius: 6px; background: #fff; color: #202630; }
+.o3dv-measure-controls { max-width: min(310px, 80vw); background: rgba(255,255,255,.96); border: 1px solid #adb5bd; border-radius: 8px; padding: 10px; box-shadow: 0 2px 8px #0003; }
+.o3dv-measure-controls small { display: block; margin-top: 6px; color: #525d68; line-height: 1.35; }
+.o3dv-measure-result { display: block; margin: 8px 0; line-height: 1.45; }

@@ -326,6 +326,10 @@ export class Website
             return;
         }
 
+        if (this.mobileMeasure?.active) {
+            this.mobileMeasure.Click (mouseCoordinates);
+            return;
+        }
         if (this.measureTool.IsActive ()) {
             this.measureTool.Click (mouseCoordinates);
             return;

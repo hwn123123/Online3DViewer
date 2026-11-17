@@ -7,6 +7,8 @@ import { PluginType, RegisterPlugin } from './pluginregistry.js';
 import { ButtonDialog, ProgressDialog } from './dialog.js';
 import { ShowMessageDialog } from './dialogs.js';
 import { Native3dmStream } from './native3dmstream.js';
+import { MobileMeasure } from './mobilemeasure.js';
+import * as THREE from 'three';
 
 import * as Engine from '../engine/main.js';
 export { Engine };
@@ -79,6 +81,7 @@ export function StartWebsite ()
         });
         if (window.O3DVNativeBridge === true) {
             const stream = new Native3dmStream (website);
+            website.mobileMeasure = new MobileMeasure (website);
             Engine.SetExternalLibraryBaseUrl (new URL ('assets/libs/', document.baseURI).href);
             window.O3DVOpenFiles = (urls) => {
                 stream.Stop ();
@@ -116,6 +119,14 @@ export function StartWebsite ()
             window.O3DVStop = () => stream.Stop ();
             if (window.O3DVNativeDebug === true) {
                 window.O3DVBenchmarkNavigation = () => stream.pager.BenchmarkNavigation ();
+                window.O3DVMeasurementDebug = () => ({ active : website.mobileMeasure.active,
+                    unit : website.mobileMeasure.unit.value,
+                    points : website.mobileMeasure.points.map ((p) => ({ point : p.point.toArray (), snapped : p.snapped })) });
+                window.O3DVProjectMeasurementPoint = (point) => {
+                    const projected = new THREE.Vector3 (...point).project (website.viewer.camera);
+                    const size = website.viewer.GetCanvasSize ();
+                    return [(projected.x + 1) * size.width / 2, (1 - projected.y) * size.height / 2];
+                };
                 window.O3DVGetViewerPreferences = () => ({
                     background : website.settings.backgroundColor.r,
                     navigation : website.viewer.GetNavigationMode (),
@@ -140,6 +151,10 @@ export function StartWebsite ()
                 }
             };
             SetEventHandler ((eventName) => {
+                if (eventName === 'model_loaded') {
+                    const units = { 1 : 'mm', 2 : 'cm', 3 : 'm', 4 : 'in', 5 : 'ft' };
+                    website.mobileMeasure.Show (units[website.model?.GetUnit ()] || '');
+                }
                 const handler = window.webkit?.messageHandlers?.o3dv;
                 if (handler) {
                     handler.postMessage ({ ...(eventName === 'model_loaded' ? website.lastImportDetails : {}),

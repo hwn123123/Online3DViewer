@@ -137,7 +137,17 @@ std::string read(JNIEnv *env,jobject self,const std::string &path,const std::str
         if(!first)definitions+=",";first=false;definitions+="{\"id\":"+quote(uuid(v->Id()))+",\"name\":"+quote(str(v->Name()))+",\"members\":[";
         const auto &ids=v->InstanceGeometryIdList();for(int i=0;i<ids.Count();i++){if(i)definitions+=",";definitions+=quote(uuid(ids[i]));}definitions+="]}";
     }
-    definitions+="]";cb.send(cb.header,"{\"layers\":"+layers+",\"materials\":"+materials+",\"definitions\":"+definitions+"}");
+    definitions+="]";
+    std::string unit;
+    switch(model.m_settings.m_ModelUnitsAndTolerances.m_unit_system.UnitSystem()) {
+        case ON::LengthUnitSystem::Millimeters: unit="mm";break;
+        case ON::LengthUnitSystem::Centimeters: unit="cm";break;
+        case ON::LengthUnitSystem::Meters: unit="m";break;
+        case ON::LengthUnitSystem::Inches: unit="in";break;
+        case ON::LengthUnitSystem::Feet: unit="ft";break;
+        default: break;
+    }
+    cb.send(cb.header,"{\"layers\":"+layers+",\"materials\":"+materials+",\"definitions\":"+definitions+",\"units\":"+quote(unit)+"}");
     size_t index=0;
     for(;;) {
         cb.checkpoint();ON_ModelComponentReference reference;

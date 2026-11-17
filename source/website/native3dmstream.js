@@ -30,11 +30,13 @@ export class Native3dmStream
 
     Notify (message)
     {
+        if (message.type === 'model_loaded') this.website.mobileMeasure?.Show (this.manifest?.units || '');
         window.webkit?.messageHandlers?.o3dv?.postMessage (message);
     }
 
     Stop ()
     {
+        this.website.mobileMeasure?.Hide ();
         this.pager.Stop ();
         this.active = false;
         this.generation += 1;
@@ -362,6 +364,7 @@ export class Native3dmStream
 
     Select (coordinates)
     {
-        this.pager.Select (coordinates);
+        if (this.website.mobileMeasure?.active) this.website.mobileMeasure.Click (coordinates);
+        else this.pager.Select (coordinates);
     }
 }

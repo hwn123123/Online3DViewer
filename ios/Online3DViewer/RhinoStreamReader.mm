@@ -153,6 +153,15 @@ struct GeometryBuffer {
         ON_BinaryFile archive(ON::archive_mode::read3dm, file.get());
         ONX_Model model;
         if (!model.IncrementalReadBegin(archive, true, 0, nullptr)) return fail(@"无法读取 3DM 的图层和材质信息。");
+        NSString *units = @"";
+        switch (model.m_settings.m_ModelUnitsAndTolerances.m_unit_system.UnitSystem()) {
+            case ON::LengthUnitSystem::Millimeters: units = @"mm"; break;
+            case ON::LengthUnitSystem::Centimeters: units = @"cm"; break;
+            case ON::LengthUnitSystem::Meters: units = @"m"; break;
+            case ON::LengthUnitSystem::Inches: units = @"in"; break;
+            case ON::LengthUnitSystem::Feet: units = @"ft"; break;
+            default: break;
+        }
         NSMutableArray *layers = [NSMutableArray array], *materials = [NSMutableArray array], *objects = [NSMutableArray array];
         NSMutableArray *unsupported = [NSMutableArray array];
         o3dv::RhinoInstances instanceResolver(model);
@@ -171,7 +180,7 @@ struct GeometryBuffer {
         }
         NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:source error:nil];
         NSMutableDictionary *manifest = [@{@"format": @"o3dv-stream-1", @"reader":@"opennurbs-instances-1", @"name": source.lastPathComponent,
-            @"sourceBytes": attributes[NSFileSize] ?: @0, @"layers": layers, @"materials": materials,
+            @"sourceBytes": attributes[NSFileSize] ?: @0, @"units": units, @"layers": layers, @"materials": materials,
             @"objects": objects, @"unsupported": unsupported, @"complete": @NO, @"objectCount": @0,
             @"geometryBytes": @0, @"nativePeakMemoryBytes": @0} mutableCopy];
         NSString *manifestPath = [directory stringByAppendingPathComponent:@"manifest.json"];

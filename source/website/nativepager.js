@@ -908,7 +908,7 @@ export class NativePager
         return canvas.toDataURL ();
     }
 
-    async Select (coordinates)
+    async Select (coordinates, measureCallback = null)
     {
         if (!this.active || this.contextLost) {
             return;
@@ -979,13 +979,15 @@ export class NativePager
                         const hit = raycaster.intersectObject (item.object, true).find ((candidate) => !candidate.object.isLineSegments ||
                             GetLineSegmentsProjectedDistance (camera, size.width, size.height, candidate.object, coordinates) <= 10);
                         if (hit && (!nearest || hit.distance < nearest.distance)) {
-                            nearest = { distance : hit.distance, data : hit.object.userData.nativeObject,
+                            nearest = { distance : hit.distance, hit, data : hit.object.userData.nativeObject,
                                 index : hit.object.isMesh ? hit.faceIndex * 3 : hit.index, mesh : hit.object.isMesh || !!hit.object.userData.nativeObject.drawMode };
                         }
                         await Pause ();
                     }
                 }
-                if (nearest && this.active && serial === this.serial) {
+                if (measureCallback && this.active && serial === this.serial) {
+                    measureCallback (nearest?.hit || null);
+                } else if (nearest && this.active && serial === this.serial) {
                     const data = nearest.data;
                     const index = nearest.index + (nearest.mesh ? data.indexBase || 0 : data.lineBase || 0);
                     const selected = data.parts?.find ((p) => nearest.mesh ? index >= p.start && index < p.end : index >= p.lineStart && index < p.lineEnd) || data;

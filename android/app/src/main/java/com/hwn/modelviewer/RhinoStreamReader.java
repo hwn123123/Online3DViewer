@@ -37,6 +37,7 @@ final class RhinoStreamReader {
     private long sourceCount;
     private RhinoBatchAccumulator batch;
     private boolean started;
+    private String units="";
 
     RhinoStreamReader(File source, File directory, Listener listener) {
         this.source = source; this.directory = directory; this.listener = listener;
@@ -67,6 +68,7 @@ final class RhinoStreamReader {
     }
 
     private void readHeader(JSONObject header) throws JSONException {
+        units=header.optString("units", "");
         JSONArray sourceLayers = header.getJSONArray("layers"), sourceMaterials = header.getJSONArray("materials");
         for (int i = 0; i < sourceLayers.length(); i++) layers.put(sourceLayers.getJSONObject(i));
         for (int i = 0; i < sourceMaterials.length(); i++) {
@@ -204,7 +206,7 @@ final class RhinoStreamReader {
         checkpoint();
         double[] publishedBounds=Double.isFinite(bounds[0])?bounds:new double[6];
         JSONObject manifest=new JSONObject().put("format","o3dv-stream-1").put("reader","opennurbs-android-1")
-            .put("name",source.getName()).put("sourceBytes",source.length()).put("layers",layers).put("materials",materials)
+            .put("name",source.getName()).put("sourceBytes",source.length()).put("units",units).put("layers",layers).put("materials",materials)
             .put("missingFiles",new JSONArray()).put("complete",complete)
             .put("warnings",new JSONArray().put("Rhino 贴图和部分渲染材质暂未完整显示"))
             .put("objectCount",objects.size()).put("sourceObjectCount",sourceCount).put("geometryBytes",geometryBytes-(batch==null?0:batch.bytesSaved()))
